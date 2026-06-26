@@ -6299,7 +6299,7 @@ function repickerBannerHTML(){
   let msg;
   if(open){
     const left=_shortDur(firstR32-now);
-    msg=`🔄 <b>Repicker is OPEN now</b> — re-pick the whole knockout bracket from the real draw${left?`, before the Round of 32 kicks off in ${left}`:''}. Tap to learn how →`;
+    msg=`🔄 <b>Repicker Open:</b> you can start picking knockout games now, but come back to pick additional games as places in the knockout round are confirmed.${left?` Round of 32 kicks off in ${left}.`:''} Tap to learn how →`;
   } else if(now >= opensAt - 4*24*3600*1000){
     const left=_shortDur(opensAt-now);
     msg = left
@@ -7056,9 +7056,9 @@ function renderRepicker(){
 
   return `
   <div style="padding-bottom:1.5rem;">
-    <div style="margin-bottom:1rem;">
-      <h1 style="font-size:1.25rem;font-weight:700;color:white;">🔄 Repicker Bracket</h1>
-      <p style="color:#64748b;font-size:0.8rem;margin-top:0.25rem;">Predict the <b>score</b> of each knockout game, starting from the real Round-of-32 teams. Your bracket advances from your scores. Locks when the knockouts kick off.</p>
+    <div style="background:linear-gradient(90deg,#7c3aed,#6d28d9);border-radius:0.75rem;padding:0.75rem 1rem;margin-bottom:1rem;box-shadow:0 2px 10px rgba(124,58,237,0.25);">
+      <h1 style="font-size:1.25rem;font-weight:700;color:#fff;margin:0;">🔄 Repicker Bracket</h1>
+      <p style="color:rgba(255,255,255,0.85);font-size:0.8rem;margin:0.25rem 0 0;">Predict the <b>score</b> of each knockout game, starting from the real Round-of-32 teams. Your bracket advances from your scores. Locks when the knockouts kick off.</p>
     </div>
 
     ${adminStatus}
