@@ -1364,6 +1364,16 @@ function rankBadge(team, align){
   </div>`;
 }
 
+// Deterministic final tiebreaker. FIFA's official chain for ranking teams is
+// points → goal difference → goals scored → fair-play (fewer disciplinary points)
+// → drawing of lots. We can't draw lots, so we substitute FIFA world ranking
+// (lower number = better) as the last, fully-deterministic step — using data the
+// app already carries instead of breaking ties alphabetically.
+const fifaRankOf = name => FIFA_RANK[name] || 999;
+// Full third-place / cross-group comparator (ascending = better team first).
+const cmpThird = (a,b)=> (b.pts||0)-(a.pts||0) || (b.gd||0)-(a.gd||0) || (b.gf||0)-(a.gf||0)
+  || (a.fp||0)-(b.fp||0) || fifaRankOf(a.name)-fifaRankOf(b.name);
+
 function h2hPanel(home, away){
   // Lookup H2H — try both key directions
   const k1=`${home}|${away}`, k2=`${away}|${home}`;
@@ -2060,7 +2070,7 @@ function allGroupStandings(){
 // teams) → overall GD → overall goals → fair play → name. getScore(gameId) returns
 // [home,away] for a decided game (real / predicted / effective) or falsy if not.
 function _rankGroup(teams, g, getScore){
-  const overall=(a,b)=> b.gd-a.gd || b.gf-a.gf || (a.fp||0)-(b.fp||0) || a.name.localeCompare(b.name);
+  const overall=(a,b)=> b.gd-a.gd || b.gf-a.gf || (a.fp||0)-(b.fp||0) || fifaRankOf(a.name)-fifaRankOf(b.name);
   teams.sort((a,b)=> b.pts-a.pts || overall(a,b));
   const games=GROUP_GAMES.filter(x=>x.g===g);
   let i=0;
@@ -2360,33 +2370,22 @@ function ranked3rds(){
   const standings = allGroupStandings();
   const thirds = Object.entries(standings).map(([g,st])=>({
     group:g, name:st[2]?.name||`3rd ${g}`,
-    pts:st[2]?.pts||0, gd:st[2]?.gd||0, gf:st[2]?.gf||0,
+    pts:st[2]?.pts||0, gd:st[2]?.gd||0, gf:st[2]?.gf||0, fp:st[2]?.fp||0,
   }));
 
-  // Primary sort by objective criteria
-  thirds.sort((a,b)=>b.pts-a.pts||b.gd-a.gd||b.gf-a.gf);
-
-  // Find the value shared by the team at position 7 (last qualifier) and
-  // position 8 (first non-qualifier) — if they're tied, we need a tiebreaker.
+  // Full FIFA chain: points → GD → goals → fair play → FIFA ranking.
+  thirds.sort(cmpThird);
   if(thirds.length < 9) return {thirds, tiedGroups:[]};
 
+  // The 7th/8th boundary only needs a manual tiebreak if the two teams are still
+  // dead-level after the whole deterministic chain (e.g. two equally-ranked or
+  // unranked teams). Otherwise the order above already stands.
   const t7 = thirds[7], t8 = thirds[8];
-  const tied = t7.pts===t8.pts && t7.gd===t8.gd && t7.gf===t8.gf;
-  if(!tied) return {thirds, tiedGroups:[]};
+  if(cmpThird(t7,t8) !== 0) return {thirds, tiedGroups:[]};
 
-  // Collect all teams that share that tie value
-  const tieVal = {pts:t7.pts, gd:t7.gd, gf:t7.gf};
-  const tiedGroups = thirds
-    .filter(t=>t.pts===tieVal.pts && t.gd===tieVal.gd && t.gf===tieVal.gf)
-    .map(t=>t.group);
-
-  // Apply user-specified ordering within the tied cluster
-  const before  = thirds.filter(t=>!tiedGroups.includes(t.group) &&
-    (t.pts>tieVal.pts || (t.pts===tieVal.pts && t.gd>tieVal.gd) ||
-     (t.pts===tieVal.pts && t.gd===tieVal.gd && t.gf>tieVal.gf)));
-  const after   = thirds.filter(t=>!tiedGroups.includes(t.group) &&
-    (t.pts<tieVal.pts || (t.pts===tieVal.pts && t.gd<tieVal.gd) ||
-     (t.pts===tieVal.pts && t.gd===tieVal.gd && t.gf<tieVal.gf)));
+  const tiedGroups = thirds.filter(t=>cmpThird(t,t7)===0).map(t=>t.group);
+  const before  = thirds.filter(t=>cmpThird(t,t7) < 0 && !tiedGroups.includes(t.group));
+  const after   = thirds.filter(t=>cmpThird(t,t7) > 0 && !tiedGroups.includes(t.group));
   const tiedObjs = thirds.filter(t=>tiedGroups.includes(t.group));
 
   // Re-order tied teams using S.thirdOrder if provided
@@ -3959,8 +3958,9 @@ function _buildGWPickerMap(){
       if(st[1]) map[g][st[1].name].second.push(usr);
       if(st[2]) userThirds.push({g, name:st[2].name, pts:st[2].pts, gd:st[2].gd, gf:st[2].gf, usr});
     }
-    // Best 8 of the 12 (up to) third-place teams qualify
-    userThirds.sort((a,b)=>b.pts-a.pts||b.gd-a.gd||b.gf-a.gf||a.name.localeCompare(b.name));
+    // Best 8 of the 12 (up to) third-place teams qualify (predictions carry no
+    // cards, so fair play is 0 here and ties fall through to FIFA ranking).
+    userThirds.sort(cmpThird);
     for(const t of userThirds.slice(0,8)) map[t.g][t.name].third.push(t.usr);
   }
   return map;
@@ -4165,7 +4165,7 @@ function renderGroupGameCard(game){
 // highlighted; the other two group members are shown (dimmed) for context.
 function md3StandingsStrip(game){
   const rows = groupPointsBeforeMd(game.g, 3)
-    .sort((a,b)=> b.pts-a.pts || b.gd-a.gd || b.gf-a.gf || a.name.localeCompare(b.name));
+    .sort((a,b)=> b.pts-a.pts || b.gd-a.gd || b.gf-a.gf || fifaRankOf(a.name)-fifaRankOf(b.name));
   if(!rows.some(t=>t.played>0)){
     return `<div style="margin-top:0.45rem;padding-top:0.45rem;border-top:1px solid rgba(255,255,255,0.06);font-size:0.68rem;color:#475569;">
       Predict the Matchday 1–2 games to see each team's points going into this one.</div>`;
@@ -6701,8 +6701,9 @@ function top2Candidates(g){
 // using FIFA's exact method (validated to reproduce their published "still
 // possible" set of combinations):
 //   1. For every group, find its 3rd-place team's BEST and WORST still-achievable
-//      finish (pts, then GD, then GF) over all remaining results — GD is bounded
-//      because running the score up too far stops a team from being third.
+//      finish over all remaining results, ranked by FIFA's full chain (points,
+//      GD, goals, fair play, then FIFA ranking) — GD is bounded because running
+//      the score up too far stops a team from being third.
 //   2. Group X "dominates" Y when X's worst finish still ranks ahead of Y's best;
 //      any of the 495 combinations that places Y in the bracket without X is then
 //      impossible, so drop it.
@@ -6714,7 +6715,7 @@ function thirdSlotLocks(){
   const sig = JSON.stringify(S.gResults);
   if(_thirdLockCache && _thirdLockSig === sig) return _thirdLockCache;
   const SLOTS = ['1A','1B','1D','1E','1G','1I','1K','1L'];
-  const cmp = (a,b)=> b.pts-a.pts || b.gd-a.gd || b.gf-a.gf;  // FIFA 3rd-place order
+  const cmp = cmpThird;          // points → GD → goals → fair play → FIFA ranking
   const MAXG = 6;                                             // 0..5 goal margins
   const grid = []; for(let h=0;h<MAXG;h++) for(let a=0;a<MAXG;a++) grid.push([h,a]);
   const groups = Object.keys(GROUPS);
@@ -6725,13 +6726,14 @@ function thirdSlotLocks(){
     function evalScn(ov){
       const t={}; GROUPS[g].forEach(n=>t[n]={name:n,pts:0,gf:0,gd:0,fp:0});
       for(const game of games){
-        const r=S.gResults[game.id]||ov[game.id]; if(!r) return;
+        const real=S.gResults[game.id]; const r=real||ov[game.id]; if(!r) return;
         const [h,a]=r;
         t[game.home].gf+=h; t[game.home].gd+=h-a; t[game.away].gf+=a; t[game.away].gd+=a-h;
         if(h>a)t[game.home].pts+=3; else if(a>h)t[game.away].pts+=3; else{t[game.home].pts++; t[game.away].pts++;}
+        if(real){ t[game.home].fp += real[2]||0; t[game.away].fp += real[3]||0; } // fair-play from cards
       }
       const r3=_rankGroup(Object.values(t), g, id=>S.gResults[id]||ov[id])[2];
-      const p={pts:r3.pts, gd:r3.gd, gf:r3.gf}; if(complete) name=r3.name;
+      const p={pts:r3.pts, gd:r3.gd, gf:r3.gf, fp:r3.fp||0, name:r3.name}; if(complete) name=r3.name;
       if(!best || cmp(p,best)<0) best=p;
       if(!worst || cmp(p,worst)>0) worst=p;
     }
@@ -6829,6 +6831,10 @@ function reScoreCell(matchId, side, val, locked, isPen){
     </div>
   </div>`;
 }
+
+// Short label for a repicker bracket side that isn't a settled team yet.
+function reSlotPlaceholder(team){ return !team ? 'TBD' : (/3rd-place/.test(team) ? '3rd-place TBD' : team); }
+function reSideMuted(team){ return `<span style="color:#64748b;font-style:italic;font-weight:400;">${esc(reSlotPlaceholder(team))}</span>`; }
 
 // ── Repicker score handlers (persist to /api/re-picks, debounced) ──
 let _reSaveTimer=null;
@@ -6940,25 +6946,40 @@ function renderRepicker(){
     const home=t.home, away=t.away;
     const homeKnown=repickerTeamKnown(home), awayKnown=repickerTeamKnown(away);
 
-    if(!home && !away){
-      return `<div style="background:#0d1f35;border:1px solid rgba(255,255,255,0.06);border-radius:0.75rem;padding:0.875rem;margin-bottom:0.5rem;text-align:center;color:#475569;font-size:0.85rem;">— TBD · enter the previous round first —</div>`;
-    }
-    if(!homeKnown || !awayKnown){
-      const note = id.startsWith('r32-') ? 'awaiting group results' : 'finish the previous round';
-      return `<div style="background:#0d1f35;border:1px solid rgba(255,255,255,0.06);border-radius:0.75rem;padding:0.875rem;margin-bottom:0.5rem;text-align:center;color:#94a3b8;font-size:0.82rem;line-height:1.4;">${esc(home||'TBD')} <span style="color:#475569;">vs</span> ${esc(away||'TBD')}<div style="color:#475569;font-size:0.68rem;margin-top:0.2rem;">— ${note} —</div></div>`;
+    // A game is pickable as soon as at least one side is a settled, known team.
+    // With neither side settled, it stays locked.
+    if(!homeKnown && !awayKnown){
+      const bothTBD = !home && !away;
+      const note = bothTBD
+        ? (id.startsWith('r32-') ? 'awaiting group results' : 'finish the previous round')
+        : 'matchup not settled yet';
+      const label = bothTBD ? '— TBD —'
+        : `${esc(reSlotPlaceholder(home))} <span style="color:#475569;">vs</span> ${esc(reSlotPlaceholder(away))}`;
+      return `<div style="background:#0d1f35;border:1px solid rgba(255,255,255,0.06);border-radius:0.75rem;padding:0.875rem;margin-bottom:0.5rem;text-align:center;color:#94a3b8;font-size:0.82rem;line-height:1.4;">🔒 ${label}<div style="color:#475569;font-size:0.68rem;margin-top:0.2rem;">— ${note} —</div></div>`;
     }
 
-    // Sync teams into the stored pick; if the upstream advancer changed, reset this slot.
+    // Sync teams into the stored pick. Reset the slot only when a previously-known
+    // team is replaced by a DIFFERENT known team (a genuine bracket change); when an
+    // unsettled side merely resolves to a real team, keep the score and update labels.
     let rp = S.rePicks[id];
-    if(!rp){ rp = S.rePicks[id] = {home,away,homeScore:undefined,awayScore:undefined,penWinner:'',penHome:undefined,penAway:undefined}; }
-    else if(rp.home!==home || rp.away!==away){
-      S.rePicks[id] = {home,away,homeScore:undefined,awayScore:undefined,penWinner:'',penHome:undefined,penAway:undefined};
-      rp = S.rePicks[id]; if(!locked) persistRe();
+    if(!rp){
+      rp = S.rePicks[id] = {home,away,homeScore:undefined,awayScore:undefined,penWinner:'',penHome:undefined,penAway:undefined};
+    } else {
+      const disruptive =
+        (homeKnown && repickerTeamKnown(rp.home) && rp.home!==home) ||
+        (awayKnown && repickerTeamKnown(rp.away) && rp.away!==away);
+      if(disruptive){
+        S.rePicks[id] = {home,away,homeScore:undefined,awayScore:undefined,penWinner:'',penHome:undefined,penAway:undefined};
+        rp = S.rePicks[id]; if(!locked) persistRe();
+      } else if(rp.home!==home || rp.away!==away){
+        rp.home=home; rp.away=away; if(!locked) persistRe();   // placeholder resolved — keep score
+      }
     }
 
     const hv=rp.homeScore!==undefined?rp.homeScore:'';
     const av=rp.awayScore!==undefined?rp.awayScore:'';
-    const isDraw = hv!=='' && av!=='' && Number(hv)===Number(av);
+    const bothKnown = homeKnown && awayKnown;
+    const isDraw = bothKnown && hv!=='' && av!=='' && Number(hv)===Number(av);
     const penH=rp.penHome!==undefined?rp.penHome:'';
     const penA=rp.penAway!==undefined?rp.penAway:'';
 
@@ -6979,15 +7000,20 @@ function renderRepicker(){
         </div>
       </div>` : '';
 
+    const oneSideNote = !bothKnown
+      ? `<div style="text-align:center;font-size:0.66rem;color:#64748b;margin-top:0.4rem;">opponent not settled yet — your score still counts once it is</div>`
+      : '';
+
     return `<div style="background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;padding:0.75rem;margin-bottom:0.5rem;">
       <div style="display:flex;align-items:center;gap:0.6rem;">
-        <div style="flex:1;text-align:right;font-size:0.85rem;font-weight:500;">${teamSpan(home)}</div>
+        <div style="flex:1;text-align:right;font-size:0.85rem;font-weight:500;">${homeKnown?teamSpan(home):reSideMuted(home)}</div>
         ${reScoreCell(id,'h',hv,locked,false)}
         <span style="color:#334155;font-weight:700;">–</span>
         ${reScoreCell(id,'a',av,locked,false)}
-        <div style="flex:1;text-align:left;font-size:0.85rem;font-weight:500;">${teamSpan(away,true)}</div>
+        <div style="flex:1;text-align:left;font-size:0.85rem;font-weight:500;">${awayKnown?teamSpan(away,true):reSideMuted(away)}</div>
       </div>
       ${penSection}
+      ${oneSideNote}
       ${actualNote}
     </div>`;
   }).join('');
