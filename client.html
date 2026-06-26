@@ -6695,12 +6695,77 @@ function top2Candidates(g){
   const info={}; st.forEach(r=>info[r.name]={pts:r.pts, max:r.pts+3*(3-(played[r.name]||0))});
   return st.filter(T=> st.filter(o=>o.name!==T.name && info[o.name].pts>info[T.name].max).length < 2).map(t=>t.name);
 }
+
+// ── Locked third-place slots ────────────────────────────────────────────
+// Work out which "winner vs 3rd" slots are already pinned to a specific team,
+// using FIFA's exact method (validated to reproduce their published "still
+// possible" set of combinations):
+//   1. For every group, find its 3rd-place team's BEST and WORST still-achievable
+//      finish (pts, then GD, then GF) over all remaining results — GD is bounded
+//      because running the score up too far stops a team from being third.
+//   2. Group X "dominates" Y when X's worst finish still ranks ahead of Y's best;
+//      any of the 495 combinations that places Y in the bracket without X is then
+//      impossible, so drop it.
+//   3. A slot is LOCKED iff every surviving combination assigns it the same group
+//      AND that group's 3rd-place team is already decided.
+// Returns { '1A': {groups:[...], lockedName:str|null}, ... }. Memoised on results.
+let _thirdLockCache = null, _thirdLockSig = null;
+function thirdSlotLocks(){
+  const sig = JSON.stringify(S.gResults);
+  if(_thirdLockCache && _thirdLockSig === sig) return _thirdLockCache;
+  const SLOTS = ['1A','1B','1D','1E','1G','1I','1K','1L'];
+  const cmp = (a,b)=> b.pts-a.pts || b.gd-a.gd || b.gf-a.gf;  // FIFA 3rd-place order
+  const MAXG = 6;                                             // 0..5 goal margins
+  const grid = []; for(let h=0;h<MAXG;h++) for(let a=0;a<MAXG;a++) grid.push([h,a]);
+  const groups = Object.keys(GROUPS);
+  function thirdProfile(g){
+    const games = GROUP_GAMES.filter(x=>x.g===g);
+    const rem = games.filter(x=>!S.gResults[x.id]);
+    let best=null, worst=null, name=null; const complete = rem.length===0;
+    function evalScn(ov){
+      const t={}; GROUPS[g].forEach(n=>t[n]={name:n,pts:0,gf:0,gd:0,fp:0});
+      for(const game of games){
+        const r=S.gResults[game.id]||ov[game.id]; if(!r) return;
+        const [h,a]=r;
+        t[game.home].gf+=h; t[game.home].gd+=h-a; t[game.away].gf+=a; t[game.away].gd+=a-h;
+        if(h>a)t[game.home].pts+=3; else if(a>h)t[game.away].pts+=3; else{t[game.home].pts++; t[game.away].pts++;}
+      }
+      const r3=_rankGroup(Object.values(t), g, id=>S.gResults[id]||ov[id])[2];
+      const p={pts:r3.pts, gd:r3.gd, gf:r3.gf}; if(complete) name=r3.name;
+      if(!best || cmp(p,best)<0) best=p;
+      if(!worst || cmp(p,worst)>0) worst=p;
+    }
+    (function rec(i,ov){ if(i===rem.length){ evalScn(ov); return; } for(const sc of grid){ ov[rem[i].id]=sc; rec(i+1,ov); } })(0,{});
+    return {best, worst, complete, name};
+  }
+  const prof={}; groups.forEach(g=>prof[g]=thirdProfile(g));
+  const doms=[];
+  for(const X of groups) for(const Y of groups)
+    if(X!==Y && prof[X].worst && prof[Y].best && cmp(prof[X].worst, prof[Y].best) < 0) doms.push([X,Y]);
+  const possible = Object.keys(THIRD_PLACE_TABLE).filter(key=>{
+    const inSet=new Set(key.split(''));
+    for(const [X,Y] of doms) if(inSet.has(Y) && !inSet.has(X)) return false;
+    return true;
+  });
+  const res={};
+  for(let i=0;i<SLOTS.length;i++){
+    const arr=[...new Set(possible.map(k=>THIRD_PLACE_TABLE[k][i]))];
+    res[SLOTS[i]] = { groups:arr, lockedName: (arr.length===1 && prof[arr[0]].complete) ? prof[arr[0]].name : null };
+  }
+  _thirdLockCache=res; _thirdLockSig=sig;
+  return res;
+}
+
 // Real-results label for an R32 slot in the repicker: the confirmed team if its
 // group position is locked, otherwise the live possibilities (or, for the
 // best-third slots, a generic placeholder). Placeholders contain "Group"/"place"
 // so repickerTeamKnown() treats the slot as not-yet-decided.
 function repickerSlotTeam(pos){
-  if(/^3rd-slot-/.test(pos)) return 'One of several 3rd-place teams';
+  const m3rd = pos.match(/^3rd-slot-(1[A-L])$/);
+  if(m3rd){
+    const lock = thirdSlotLocks()[m3rd[1]];
+    return (lock && lock.lockedName) || 'One of several 3rd-place teams';
+  }
   const m = pos.match(/^([12])([A-L])$/); if(!m) return pos;
   const wantPos=+m[1], g=m[2];
   const confirm = groupConfirm(g);
