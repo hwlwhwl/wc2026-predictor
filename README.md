@@ -1,75 +1,99 @@
-# WC 2026 Predictor — Railway Edition
+# Tournament Pick'em
 
-A shared multiplayer version of the WC 2026 Predictor. Everyone uses the same server — picks save instantly, results appear automatically via ESPN, and all clients stay in sync via WebSocket.
+A shared, real-time prediction game for a friend group. Everyone predicts the score
+of every group-stage game and the full knockout bracket; points are scored per game;
+results fill in automatically from a live sports API; and all clients stay in sync
+over WebSockets. A secondary **Repicker** mode lets players re-pick the whole
+knockout bracket from the *real* draw once the group stage is decided.
 
-## What's different from the standalone version
+Built for the 2026 World Cup, but designed to be re-pointed at a different tournament
+(Euros, AFCON, Copa América, …) by swapping a defined set of data — see
+**[`SPEC.md`](SPEC.md)**.
 
-| Feature | Standalone (`index.html`) | Railway |
-|---|---|---|
-| Storage | Browser localStorage + Pantry Cloud | SQLite on Railway |
-| Auth | Any name, no password | Name + 4-digit PIN |
-| Sync | Manual "Sync from hub" button | Instant WebSocket push |
-| Results | Admin enters manually + ESPN fetch button | ESPN polls automatically (60s/30s live) |
-| Hosting | Open `index.html` in a browser | Deploy to Railway |
+## Features
+
+- **Score predictions** for every group game and the entire knockout bracket; the
+  user's bracket advances from their own picks (penalty-shootout winner on draws).
+- **Autosave** — picks persist as you type (debounced), with save/restore that never
+  drops an in-flight edit.
+- **Live results** — a poller writes finished scores automatically and shows
+  in-progress scores; disciplinary cards feed a fair-play tiebreaker.
+- **Real tournament rules** — within-group head-to-head mini-league tiebreakers,
+  best-third qualification via the official third-place allocation table, and live
+  "who's locked / still possible" detection.
+- **Leaderboard** with weighted scoring (correct / exact / goal-error / odds-weighted
+  surprise) and per-group distribution charts that highlight *your* score.
+- **Repicker** — a second game on its own leaderboard; games become pickable as soon
+  as one side is settled, with the possible opponents shown for the rest.
+- **Auto-pick helper** — suggests plausible scores one game at a time (main picks and
+  Repicker).
+- Chat with `@`-mentions, avatars, light/dark mode, and an admin panel.
+
+## Tech stack
+
+Node ≥20 · Express · `ws` (WebSocket) · libSQL/Turso (`@libsql/client`) · `bcrypt` ·
+Tailwind (pre-built to a static stylesheet). The frontend is a single
+`client.html` (HTML + CSS + vanilla JS); the backend is a single `server.js`.
+
+```
+client.html  ←── served by Express
+     │
+     ├── POST /api/auth          login / register (name + PIN)
+     ├── GET  /api/state         full state snapshot (REST fallback)
+     ├── PUT  /api/predictions   save group/KO picks (debounced)
+     ├── PUT  /api/re-picks      save Repicker picks (debounced)
+     └── WebSocket               real-time full-state push on any change
+
+server.js
+     ├── Express routes + static assets
+     ├── WebSocket server (ws)
+     ├── libSQL / Turso          users, predictions, results, settings, chat
+     └── live-results poller     ~60s, ~30s when games are live
+```
 
 ## Local development
 
 ```bash
 npm install
-node server.js
-# Open http://localhost:3000
+npm run build        # build public/tailwind.css (once, or on HTML changes)
+node server.js       # http://localhost:3000
 ```
 
-## Deploy to Railway
+With no `TURSO_URL` set, the server uses a local SQLite file for the database, so you
+can run it without any cloud setup.
 
-1. Push this directory to a GitHub repo
-2. Go to [railway.app](https://railway.app) → New Project → Deploy from GitHub
-3. Select your repo — Railway auto-detects Node.js
-4. Add environment variables (optional):
-   - `ADMIN_PIN` — PIN that grants admin privileges (default: `wc2026`)
-   - `DB_PATH` — SQLite file path (default: `./wc26.db` — **add a Railway Volume** so it persists across deploys)
-5. Railway gives you a `.railway.app` URL — share it with your group
+## Deploy (Railway + Turso)
 
-### Persistent database (important!)
+1. Create a **Turso** database and grab its URL + auth token.
+2. Push this repo to GitHub → [railway.app](https://railway.app) → **New Project →
+   Deploy from GitHub**. Railway auto-detects Node and runs `npm run build` then
+   `node server.js`.
+3. Set the environment variables below.
+4. Railway gives you a `*.railway.app` URL — share it with your group.
 
-By default SQLite writes to the container filesystem, which is wiped on redeploy.
-
-**Fix:** Add a Railway Volume mounted at `/data`, then set `DB_PATH=/data/wc26.db`.
-
-In Railway dashboard: your service → Storage → Add Volume → Mount path `/data`.
-
-## Admin access
-
-The **first user** to register automatically gets admin. Any user whose PIN matches `ADMIN_PIN` (env var) also gets admin.
-
-Admin users can:
-- Enter/edit/delete results manually in the Admin panel
-- Override ESPN-fetched scores if needed
-
-ESPN results update automatically — admins only need to intervene for KO round results (which ESPN covers but the bracket matching is more complex).
-
-## Architecture
-
-```
-client.html  ←── served by Express
-     │
-     ├── POST /api/auth          login / register
-     ├── GET  /api/state         full state snapshot (REST fallback)
-     ├── PUT  /api/predictions   save my picks (debounced 600ms)
-     │
-     └── WebSocket ws://...      real-time push on any state change
-
-server.js
-     ├── Express routes
-     ├── WebSocket server (ws)
-     ├── SQLite (better-sqlite3)  — users, predictions, results
-     └── ESPN poller              — polls every 60s, 30s when live
-```
+Healthcheck is `GET /api/health` (returns 200 once the DB is ready, 503 during init;
+allow ~60s for cold start + Turso init).
 
 ## Environment variables
 
-| Variable | Default | Description |
+| Variable | Required | Description |
 |---|---|---|
-| `PORT` | `3000` | HTTP port |
-| `DB_PATH` | `./wc26.db` | SQLite database path |
-| `ADMIN_PIN` | `wc2026` | PIN that grants admin on registration |
+| `TURSO_URL` | prod | `libsql://your-db.turso.io`. If unset, a local SQLite file is used. |
+| `TURSO_TOKEN` | prod | Turso auth token. |
+| `ADMIN_PIN` | recommended | PIN that grants admin to a new registrant. **No hard-coded default** — if unset, only the first registered user becomes admin. |
+| `PORT` | auto | Set by the platform; defaults to 3000. |
+
+## Admin
+
+The **first user to register** automatically becomes admin. Any later user who
+registers with the `ADMIN_PIN` also becomes admin. Admins can enter/edit/delete
+results manually, configure the scoring weights and knockout-round curve, and control
+the Repicker's open/closed state. (Live results auto-fill; admins mainly intervene to
+sanity-check or override.)
+
+## Documentation
+
+- **[`SPEC.md`](SPEC.md)** — the authoritative build specification: full feature set,
+  data model, scoring formulas, the tournament-specific "swap kit", and a checklist
+  for recreating the app for a different tournament.
+- `DEVELOPMENT.md` — older background notes (superseded by `SPEC.md` where they differ).

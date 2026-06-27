@@ -10,6 +10,35 @@ third-place logic) that have since been implemented — prefer this file.
 
 ---
 
+## 0. Tournament rules — specify these first ⚠️
+
+**Different tournaments are run by different governing bodies (FIFA, UEFA, CAF,
+CONMEBOL, AFC, CONCACAF, OFC, …) and their rules are NOT interchangeable.** This
+engine *encodes* a specific set of rules. If you re-point it at a new tournament
+without confirming them, you will ship wrong standings, wrong qualifiers, and wrong
+matchups — silently.
+
+Before building or adapting, obtain **that tournament's official regulations** and pin
+down each item below. Treat anything you can't confirm as a **blocking question for
+the tournament owner**, not a default to be guessed.
+
+| Rule to confirm | What varies between tournaments | Lives in |
+|---|---|---|
+| **Group ranking / tiebreakers** | The exact ordered criteria, and crucially whether head-to-head is a *mini-league among all tied teams* vs *pairwise*, and whether it sits **before or after** overall goal difference. (2026 FIFA: H2H before overall GD. Older FIFA: overall GD first. UEFA Euros: H2H-first with a different cascade.) | `_rankGroup`, `cmpThird` |
+| **Who advances & how many** | Top-N per group; whether best third-/fourth-placed teams advance and how many; host/seeding quirks. | qualifier logic, `R32_FIXED` |
+| **Best-placed allocation** | If "best thirds" (or similar) advance, the **official published table** mapping which qualifying groups feed which bracket slots. A fixed lookup — **never infer it**. | `THIRD_PLACE_TABLE` |
+| **Bracket structure** | The exact cross-bracket pairings, round by round. | `R32_FIXED`, `RE_*_PAIRS` |
+| **Disciplinary / fair play** | Whether it's a tiebreaker at all, and the point value per card type. | `computeFairPlay` |
+| **Final tiebreaker** | The official last step (often *drawing of lots*). This app substitutes a ranking table for determinism — confirm that's acceptable and that a "locked" claim is understood as a modelling assumption in that rare edge case. | `cmpThird` / `fifaRankOf` |
+| **Ranking table** | Which ranking is used for the deterministic tiebreaker and the bot — FIFA world ranking, UEFA coefficients, a confederation ranking, etc. | `FIFA_RANK` |
+| **Knockout draws** | Whether KO draws go to a penalty shootout (and need a recorded winner) or replays/extra-time only. | KO scoring, `pen_winner` |
+
+> **Naming note:** several constants/functions are named after FIFA (`FIFA_RANK`,
+> `fifaRankOf`) for historical reasons. They are **generic** — fill them with whatever
+> governing body's data applies. Rename if you like; nothing else depends on the name.
+
+---
+
 ## 1. Concept
 
 A shared multiplayer pick'em for a friend group. Every participant predicts the
@@ -20,9 +49,9 @@ secondary **Repicker** mode lets players re-pick the whole knockout bracket from
 *real* draw once group results are known.
 
 Design priorities, in order: zero-friction for players (name + PIN, autosave,
-instant sync), correctness of tournament rules (real FIFA tiebreakers and
-third-place allocation), and "it just updates itself" (live results, live
-qualification/lock logic).
+instant sync), correctness of **the specific tournament's** rules (the real
+tiebreakers and best-placed allocation for that competition — see §0), and "it just
+updates itself" (live results, live qualification/lock logic).
 
 ---
 
@@ -263,9 +292,46 @@ through the KO rounds.
   inline colours. **New code should use the CSS variables** (`var(--bg)`,
   `var(--text)`, …) defined in `:root`/`body[data-theme]`.
 
+### 5.12 Configuration & admin options
+
+Several behaviours are currently **hard-coded assumptions** that vary by group, host,
+or tournament. They should be **admin settings** (stored in the `settings` table,
+edited in the admin panel, broadcast in state) rather than baked into code — so the
+same build serves different tournaments and group preferences without edits.
+
+Implemented as settings today:
+
+| Option | Default | Notes |
+|---|---|---|
+| Scoring weights (A correct / B exact / C PAB) | tuned | Server-synced; version banner covers stale tabs. |
+| KO round-weight curve | `moderate` | `gentle` / `moderate` / `steep`. |
+| Repicker open state | auto | Auto-open when all group results in; admin force-open / force-close. |
+
+Recommended to make configurable (currently assumed):
+
+| Option | Current hard-coded behaviour | Proposed setting |
+|---|---|---|
+| **Require a photo to register** | Avatar is mandatory at sign-up | `avatar_policy`: required / optional / off |
+| **Repicker feature** | Always present (only its open-state toggles) | `repicker_enabled`: on / off (hide the tab + logic entirely) |
+| **Auto-pick helper** | Always available | `bot_enabled`: on / off |
+| **Surprise (odds-weighted) column** | Always shown | `show_surprise`: on / off |
+| **PAB skip penalty** | Skipped game = +3 PAB | `pab_skip_penalty`: integer |
+| **Predictions lock time** | `LOCK_TIME` constant | `lock_time`: admin-set datetime |
+| **Live results auto-poll** | Always polling | `results_mode`: auto (API) / manual-only |
+| **Hide others' picks until lock** | All picks always visible | `picks_visibility`: always / after-lock |
+| **Open registrations** | Anyone can register | `signups_open`: on / off (lock the roster once set) |
+| **Chat** | Always on | `chat_enabled`: on / off |
+| **Tournament metadata** | UI strings assume "World Cup 2026" | `tournament_name`, `governing_body`, `season` — so headings/labels aren't hard-coded |
+| **Format / advancement** | 12 groups → top-2 + 8 thirds → 32 | A `format` config (groups, advancers, whether best-placed teams qualify). Larger change — drives `R32_FIXED`, the third-place table, and the bracket builders. |
+| **Theme default & user toggle** | Dark default, user can switch | `default_theme`, `allow_theme_toggle` |
+
+When adding a setting: store it in `settings`, surface it in the admin panel, include
+it in `buildStatePayload()`, read it on the client from `S.settings`, and **default to
+today's behaviour** so existing deployments are unchanged.
+
 ---
 
-## 6. Tiebreaker reference (2026 — verify per tournament)
+## 6. Tiebreaker reference (governing-body specific — see §0, verify per tournament)
 
 Ranking teams (within group and for best-thirds):
 1. Points
@@ -273,8 +339,9 @@ Ranking teams (within group and for best-thirds):
 3. Overall goal difference
 4. Overall goals scored
 5. Fair-play points (fewer is better)
-6. *Official:* drawing of lots → **we substitute FIFA world ranking** (a deterministic
-   stand-in, since the app can't draw lots). A "lock" that depends on this step is a
+6. *Official:* drawing of lots → **we substitute the configured ranking table**
+   (`FIFA_RANK` — fill with the tournament's ranking) as a deterministic stand-in,
+   since the app can't draw lots. A "lock" that depends on this step is a
    modelling assumption, not a guarantee.
 
 Shared comparator: `cmpThird(a,b)` = points → GD → goals → fair-play → FIFA rank.
