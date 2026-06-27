@@ -5724,6 +5724,49 @@ function renderGroupsTab(){
       : (val===mx?'#4ade80':val===mn?'#f87171':'#94a3b8');
   }
 
+  // Distribution of one metric across the field as a small histogram, with the
+  // viewer's own value highlighted (gold bar + caret) where their score lands.
+  function metricDistViz(m, stats){
+    const key=m.key;
+    const rows=stats.filter(s=> key==='positions' ? s.positions!==null : s[key]!==null);
+    const den=m.den();
+    const labelRow = extra => `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:0.4rem;margin-bottom:0.05rem;">
+        <span style="font-size:0.66rem;color:#94a3b8;font-weight:600;white-space:nowrap;" title="${m.tip||''}">${m.label}</span>${extra}</div>`;
+    if(!rows.length){
+      return `<div style="margin-bottom:0.5rem;">${labelRow('')}
+        <div style="font-size:0.6rem;color:#475569;">— once all group games are played —</div></div>`;
+    }
+    const vals=rows.map(s=>s[key]);
+    let lo=0, hi;
+    if(key==='positions') hi=4; else if(den!=null) hi=den; else hi=Math.max(1,...vals);
+    hi=Math.max(hi,...vals,1);
+    const nb=hi-lo+1;
+    const counts=new Array(nb).fill(0); vals.forEach(v=>counts[v-lo]++);
+    const maxC=Math.max(...counts,1);
+    const viewer=rows.find(s=>s.name===S.name);
+    const vVal=viewer?viewer[key]:null;
+    const W=100,H=30,padX=2,padTop=2,padBot=3, plotH=H-padTop-padBot, axisY=padTop+plotH;
+    const slot=(W-2*padX)/nb, bw=slot*0.66;
+    let bars='';
+    counts.forEach((c,i)=>{ if(!c) return;
+      const cx=padX+slot*(i+0.5), bh=Math.max(0.8,(c/maxC)*plotH), you=vVal!=null&&(lo+i)===vVal;
+      bars+=`<rect x="${(cx-bw/2).toFixed(1)}" y="${(axisY-bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="0.5" fill="${you?'#fbbf24':'rgba(148,163,184,0.45)'}"/>`;
+    });
+    let caret='';
+    if(vVal!=null){ const cx=padX+slot*((vVal-lo)+0.5);
+      caret=`<polygon points="${(cx-2).toFixed(1)},${(axisY+0.3).toFixed(1)} ${(cx+2).toFixed(1)},${(axisY+0.3).toFixed(1)} ${cx.toFixed(1)},${(axisY+2.6).toFixed(1)}" fill="#fbbf24"/>`; }
+    const svg=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:30px;display:block;">
+      <line x1="${padX}" y1="${axisY}" x2="${W-padX}" y2="${axisY}" stroke="rgba(255,255,255,0.14)" stroke-width="0.5"/>${bars}${caret}</svg>`;
+    const youTxt = vVal!=null
+      ? `<span style="font-size:0.62rem;color:#fbbf24;font-weight:700;">you: ${vVal}${den!=null?`/${den}`:''}</span>`
+      : `<span style="font-size:0.6rem;color:#475569;">field of ${rows.length}</span>`;
+    return `<div style="margin-bottom:0.5rem;">
+      ${labelRow(youTxt)}
+      ${svg}
+      <div style="display:flex;justify-content:space-between;font-size:0.55rem;color:#475569;line-height:1;margin-top:0.05rem;"><span>${lo}</span><span>${hi}</span></div>
+    </div>`;
+  }
+
   const cards=grpKeys.map(g=>{
     const games=GROUP_GAMES.filter(x=>x.g===g);
     const completed=games.filter(x=>S.gResults[x.id]);
@@ -5821,31 +5864,7 @@ function renderGroupsTab(){
         {label:'Standings', key:'positions', lowerBetter:false, den:()=>allDone?4:null,   tip:'How many of the 4 final group positions each person predicted correctly (shown once all group games are played)'},
       ];
 
-      const colHeaders=stats.map(s=>`<th style="padding:${_rp};text-align:center;font-size:0.7rem;color:#64748b;font-weight:500;max-width:5rem;" title="${esc(s.name)}">${esc(abbrevName(s.name))}</th>`).join('');
-
-      const metricRows=metrics.map(m=>{
-        const vals=stats.map(s=>m.key==='positions'?s.positions:s[m.key]);
-        const cells=stats.map((s,i)=>{
-          const val=vals[i];
-          if(val===null) return `<td style="padding:${_rp};text-align:center;font-size:0.8rem;color:#334155;">–</td>`;
-          const col=metricColor(val,vals,m.lowerBetter);
-          const den=m.den();
-          const display=den!==null?`${val}<span style="font-size:0.65rem;color:#475569;">/${den}</span>`:`${val}`;
-          return `<td style="padding:${_rp};text-align:center;font-weight:700;font-size:0.85rem;color:${col};">${display}</td>`;
-        }).join('');
-        return `<tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
-          <td style="padding:${_rp};font-size:0.72rem;color:#64748b;white-space:nowrap;cursor:default;position:sticky;left:0;z-index:1;background:#0d1f35;border-right:1px solid rgba(255,255,255,0.08);" title="${m.tip||''}">${m.label}</td>
-          ${cells}
-        </tr>`;
-      }).join('');
-
-      statsHTML=`<table style="border-collapse:collapse;height:100%;">
-        <thead><tr style="border-bottom:1px solid rgba(255,255,255,0.08);">
-          <th style="padding:${_rp};text-align:left;font-size:0.65rem;color:#475569;font-weight:400;position:sticky;left:0;z-index:2;background:#0d1f35;border-right:1px solid rgba(255,255,255,0.08);"></th>
-          ${colHeaders}
-        </tr></thead>
-        <tbody>${metricRows}</tbody>
-      </table>`;
+      statsHTML=`<div style="padding:0.55rem 0.7rem;min-width:11rem;">${metrics.map(m=>metricDistViz(m,stats)).join('')}</div>`;
     } else {
       statsHTML=`<div style="padding:1rem;font-size:0.8rem;color:#334155;display:flex;align-items:center;justify-content:center;height:100%;">Import predictions to compare</div>`;
     }
@@ -5869,7 +5888,7 @@ function renderGroupsTab(){
         <span style="display:inline-block;width:0.85em;height:0.85em;border-radius:50%;border:2px dashed #4ade80;vertical-align:-0.1em;"></span> into knockouts ·
         <span style="display:inline-block;width:0.85em;height:0.85em;border-radius:50%;border:2px solid #cbd5e1;vertical-align:-0.1em;"></span> guaranteed top 2 ·
         <span style="display:inline-block;width:0.85em;height:0.85em;border-radius:50%;border:2px solid #fbbf24;vertical-align:-0.1em;"></span> position confirmed
-        ${participants.length>0?' · <span style="color:#4ade80;">green</span> = best, <span style="color:#f87171;">red</span> = worst per group':''}
+        ${participants.length>0?' · per metric: <span style="color:#94a3b8;">▮</span> field distribution, <span style="color:#fbbf24;">▮</span> your score':''}
       </p>
     </div>
     <div>${cards}</div>
