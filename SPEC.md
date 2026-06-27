@@ -306,13 +306,19 @@ Implemented as settings today:
 | Scoring weights (A correct / B exact / C PAB) | tuned | Server-synced; version banner covers stale tabs. |
 | KO round-weight curve | `moderate` | `gentle` / `moderate` / `steep`. |
 | Repicker open state | auto | Auto-open when all group results in; admin force-open / force-close. |
+| **Require a photo to join** (`avatar_policy`) | `required` | required / optional / off. Returned in the `/api/auth` response so the sign-up photo step adapts before the socket connects. |
+| **Repicker feature** (`repicker_enabled`) | `on` | on / off — hides the tab, banner, and view entirely (separate from open/close). |
+| **Hide others' picks until lock** (`picks_visibility`) | `always` | always / after-lock — `picksVisible()` gates other players out of the Picks/Leaderboard/Results comparisons until `isLocked()`. |
+| **Tournament name** (`tournament_name`) | `WC2026` | Free text; drives the nav title + page title via `_applyBranding()`. |
+
+All four above are edited from **Admin → 🎛️ Game options** (`_adminGameOptions`), saved
+via the generic `_setSetting(key, value)` helper.
 
 Recommended to make configurable (currently assumed):
 
 | Option | Current hard-coded behaviour | Proposed setting |
 |---|---|---|
-| **Require a photo to register** | Avatar is mandatory at sign-up | `avatar_policy`: required / optional / off |
-| **Repicker feature** | Always present (only its open-state toggles) | `repicker_enabled`: on / off (hide the tab + logic entirely) |
+| **Governing body / season** | Not shown | `governing_body`, `season` (companions to `tournament_name`) |
 | **Auto-pick helper** | Always available | `bot_enabled`: on / off |
 | **Surprise (odds-weighted) column** | Always shown | `show_surprise`: on / off |
 | **PAB skip penalty** | Skipped game = +3 PAB | `pab_skip_penalty`: integer |

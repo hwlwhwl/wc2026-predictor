@@ -55,12 +55,12 @@ server.js
 
 ```bash
 npm install
-npm run build        # build public/tailwind.css (once, or on HTML changes)
-node server.js       # http://localhost:3000
+npm run build                       # build public/tailwind.css (once, or on HTML changes)
+TURSO_URL=file:wc26.db node server.js   # http://localhost:3000
 ```
 
-With no `TURSO_URL` set, the server uses a local SQLite file for the database, so you
-can run it without any cloud setup.
+`TURSO_URL` is **required**. For local development point it at a local libSQL file
+(`file:wc26.db`) — no cloud setup needed. For production use a Turso URL + token.
 
 ## Deploy (Railway + Turso)
 
@@ -78,8 +78,8 @@ allow ~60s for cold start + Turso init).
 
 | Variable | Required | Description |
 |---|---|---|
-| `TURSO_URL` | prod | `libsql://your-db.turso.io`. If unset, a local SQLite file is used. |
-| `TURSO_TOKEN` | prod | Turso auth token. |
+| `TURSO_URL` | **yes** | `libsql://your-db.turso.io` in prod, or `file:wc26.db` for local dev. The server exits if it's unset. |
+| `TURSO_TOKEN` | prod | Turso auth token (not needed for a local `file:` DB). |
 | `ADMIN_PIN` | recommended | PIN that grants admin to a new registrant. **No hard-coded default** — if unset, only the first registered user becomes admin. |
 | `PORT` | auto | Set by the platform; defaults to 3000. |
 

@@ -832,7 +832,9 @@ app.post('/api/auth', asyncHandler(async (req, res) => {
       'INSERT INTO sessions (token, user_id, name, is_admin) VALUES (?, ?, ?, ?)',
       [token, userId, trimmedName, isAdmin ? 1 : 0]
     );
-    return res.status(201).json({ token, name: trimmedName, avatar: '', isAdmin, isNew: true });
+    const apRow = await dbGet("SELECT value FROM settings WHERE key = 'avatar_policy'");
+    const avatarPolicy = apRow?.value || 'required';
+    return res.status(201).json({ token, name: trimmedName, avatar: '', isAdmin, isNew: true, avatarPolicy });
   }
 }));
 

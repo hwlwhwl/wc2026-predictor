@@ -402,7 +402,7 @@
 
 <nav style="position:sticky;top:0;z-index:50;background:var(--bg-nav);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);border-bottom:1px solid var(--border);">
   <div style="max-width:54rem;margin:0 auto;padding:0 1rem;display:flex;align-items:center;height:3.5rem;gap:0.25rem;">
-    <span style="font-weight:700;color:#fcd34d;margin-right:0.75rem;white-space:nowrap;font-size:0.95rem;display:flex;align-items:center;gap:0.4rem;"><img src="/ball.png" style="width:1.4rem;height:1.4rem;border-radius:50%;object-fit:cover;vertical-align:middle;" /> WC2026</span>
+    <span style="font-weight:700;color:#fcd34d;margin-right:0.75rem;white-space:nowrap;font-size:0.95rem;display:flex;align-items:center;gap:0.4rem;"><img src="/ball.png" style="width:1.4rem;height:1.4rem;border-radius:50%;object-fit:cover;vertical-align:middle;" /> <span id="nav-title">WC2026</span></span>
     <button class="tab" id="tn-predict"   onclick="showView('predict')">Predict</button>
     <button class="tab" id="tn-groups"    onclick="showView('groups')">Picks</button>
     <button class="tab" id="tn-results"   onclick="showView('results')">Results</button>
@@ -441,7 +441,7 @@
   <!-- Step 2: photo (new users only) -->
   <div id="auth-step2" style="display:none;background:var(--bg-card);border:1px solid var(--border);border-radius:1rem;padding:2rem;max-width:22rem;width:100%;text-align:center;">
     <div style="font-weight:700;font-size:1.2rem;color:var(--text-strong);margin-bottom:0.25rem;">Add your photo</div>
-    <div style="font-size:0.8rem;color:var(--text-faint);margin-bottom:1.5rem;">Required so everyone knows who's who</div>
+    <div data-avatar-sub style="font-size:0.8rem;color:var(--text-faint);margin-bottom:1.5rem;">Required so everyone knows who's who</div>
     <!-- Avatar preview (square crop shown as circle) -->
     <div id="auth-avatar-preview"
       style="width:96px;height:96px;border-radius:50%;overflow:hidden;border:2px dashed var(--border-strong);background:var(--bg-tint);display:flex;align-items:center;justify-content:center;font-size:2.5rem;margin:0 auto 1rem;box-shadow:0 4px 16px rgba(0,0,0,0.25);">
@@ -462,7 +462,7 @@
       style="width:100%;background:#16a34a;color:white;border:none;border-radius:0.75rem;padding:0.75rem 1rem;font-weight:600;font-size:1rem;cursor:not-allowed;opacity:0.45;">
       Continue →
     </button>
-    <div style="margin-top:0.75rem;font-size:0.72rem;color:var(--text-muted);">A photo is required to participate</div>
+    <div data-avatar-note style="margin-top:0.75rem;font-size:0.72rem;color:var(--text-muted);">A photo is required to participate</div>
     <!-- Inline camera for step 2 -->
     <div id="auth-camera-wrap" style="display:none;margin-top:1rem;">
       <video id="auth-camera-video" autoplay playsinline style="width:100%;border-radius:0.5rem;margin-bottom:0.5rem;"></video>
@@ -2002,6 +2002,9 @@ const KO_ROUND_DATES = {
 // ═══════════════════════════════════════════════════════════
 const LOCK_TIME = new Date('2026-06-11T19:00:00Z');
 function isLocked(){ return Date.now() >= LOCK_TIME.getTime(); }
+// When picks_visibility = 'after-lock', other players' predictions stay hidden
+// until the lock time; everyone always sees their own.
+function picksVisible(){ return S.settings?.picks_visibility !== 'after-lock' || isLocked(); }
 
 // One vivid colour per group — used on map markers
 const GROUP_COLORS = {
@@ -2784,6 +2787,34 @@ function hideAuthOverlay(){
 }
 
 let _authPendingPin = ''; // remembered so the welcome message can show it
+let _avatarPolicy = 'required'; // 'required' | 'optional' | 'off' — from /api/auth (avatar_policy setting)
+
+// Generic admin setting writer: PUT the key, update local state, re-render.
+async function _setSetting(key, value){
+  try{
+    const res = await fetch('/api/settings/'+encodeURIComponent(key), {method:'PUT', headers:_authHeaders(), body:JSON.stringify({value})});
+    if(!res.ok){ alert('Failed to save setting'); return; }
+    S.settings[key] = value; _updateNavTabs(); render();
+  }catch(e){ alert('Network error saving setting'); }
+}
+
+// Apply the configurable tournament name to the nav + page title.
+function _applyBranding(){
+  const name = (S.settings?.tournament_name||'').trim() || 'WC2026';
+  const el = document.getElementById('nav-title'); if(el) el.textContent = name;
+  document.title = name + ' Predictor';
+}
+
+// Adjust the registration photo step for the active avatar policy.
+function _authApplyAvatarPolicy(){
+  if(_avatarPolicy!=='optional') return; // 'required' uses the default (disabled) state
+  const btn = document.getElementById('auth-continue-btn');
+  if(btn){ btn.disabled=false; btn.style.opacity='1'; btn.style.cursor='pointer'; btn.textContent='Continue (skip photo) →'; }
+  const sub = document.querySelector('#auth-step2 [data-avatar-sub]');
+  if(sub) sub.textContent = 'Add a photo so people know who you are — or skip it.';
+  const note = document.querySelector('#auth-step2 [data-avatar-note]');
+  if(note) note.textContent = 'A photo is optional';
+}
 
 async function doAuthSubmit(){
   const name = document.getElementById('auth-name')?.value?.trim();
@@ -2808,13 +2839,19 @@ async function doAuthSubmit(){
     localStorage.setItem('wc26_token_admin', _isAdmin ? '1' : '0');
     S.name = data.name;
     S.avatar = data.avatar || '';
+    if(data.avatarPolicy) _avatarPolicy = data.avatarPolicy;
     // Show admin tab immediately if admin
     if(_isAdmin){ S.adminUnlocked=true; _updateNavTabs(); }
-    if(data.isNew){
+    if(data.isNew && _avatarPolicy!=='off'){
       // New user — show photo step before entering the app
       _authPendingPin = pin;
       document.getElementById('auth-step1').style.display = 'none';
       document.getElementById('auth-step2').style.display = 'block';
+      _authApplyAvatarPolicy();
+    } else if(data.isNew){
+      // New user but photos are disabled — skip the photo step
+      _authPendingPin = pin;
+      authFinishRegistration();
     } else {
       // Returning user — go straight in
       hideAuthOverlay();
@@ -2899,9 +2936,9 @@ function authCloseCamera(){
 }
 
 async function authFinishRegistration(){
-  if(!S.avatar){ alert('Please add a photo first.'); return; }
-  // Save avatar to server then enter the app
-  await _saveAvatar();
+  if(_avatarPolicy==='required' && !S.avatar){ alert('Please add a photo first.'); return; }
+  // Save avatar to server then enter the app (optional/off may have no photo)
+  if(S.avatar) await _saveAvatar();
   authCloseCamera();
   hideAuthOverlay();
   connectWS();
@@ -3463,12 +3500,15 @@ async function deleteChat(id){
 
 // ═══════════════════════════════════════════════════════════
 function _updateNavTabs(){
+  _applyBranding();
   // Admin tab: only visible to admins
   const adminTab = document.getElementById('tn-admin');
   if(adminTab) adminTab.style.display = _isAdmin ? '' : 'none';
-  // Repicker tab: visible when admin has opened it, or to admin always
+  // Repicker tab: only when the feature is enabled AND (it's open, or you're admin)
+  const reEnabled = S.settings?.repicker_enabled !== 'off';
   const reTab = document.getElementById('tn-repicker');
-  if(reTab) reTab.style.display = (S.settings?.repicker_open==='true' || _isAdmin) ? '' : 'none';
+  if(reTab) reTab.style.display = (reEnabled && (S.settings?.repicker_open==='true' || _isAdmin)) ? '' : 'none';
+  if(!reEnabled && S.view==='repicker') S.view='compare'; // don't strand anyone on a hidden tab
 }
 
 function _updateNavUser(){
@@ -4565,7 +4605,7 @@ function _hasPicks(u){
 function renderResults(){
   const participants=[];
   if(S.name&&Object.keys(S.gPreds).length>0) participants.push({name:S.name+' (you)',gPreds:S.gPreds});
-  participants.push(...S.otherUsers.filter(_hasPicks));
+  if(picksVisible()) participants.push(...S.otherUsers.filter(_hasPicks));
 
   const liveIds = new Set(Object.keys(S.gLive).map(Number));
   const doneIds = new Set(Object.keys(S.gResults).map(Number));
@@ -4680,7 +4720,7 @@ function renderResults(){
   // Mirror the group participant columns, but read KO predictions.
   const koParticipants=[];
   if(S.name && Object.keys(S.gPreds).length>0) koParticipants.push({name:S.name+' (you)', kPreds:S.kPreds||{}});
-  koParticipants.push(...S.otherUsers.filter(_hasPicks).map(u=>({name:u.name, kPreds:u.kPreds||{}})));
+  if(picksVisible()) koParticipants.push(...S.otherUsers.filter(_hasPicks).map(u=>({name:u.name, kPreds:u.kPreds||{}})));
 
   const koRoundLabel = id =>
     id.startsWith('r32') ? 'Round of 32' :
@@ -4941,7 +4981,7 @@ function renderCompare(){
   const allPred=[];
   if(S.name&&(Object.keys(S.gPreds).length>0||Object.keys(S.kPreds).length>0))
     allPred.push({name:S.name+' (you)',gPreds:S.gPreds,kPreds:S.kPreds});
-  allPred.push(...S.otherUsers.map(u=>({name:u.name,gPreds:u.gPreds||{},kPreds:u.kPreds||{}})));
+  if(picksVisible()) allPred.push(...S.otherUsers.map(u=>({name:u.name,gPreds:u.gPreds||{},kPreds:u.kPreds||{}})));
 
   const koActive = Object.keys(KO_VENUES).some(id=>{ const r=S.kResults[id]; return r&&r.home&&r.away&&r.homeScore!=null; });
 
@@ -5278,6 +5318,36 @@ function renderCompare(){
 // ═══════════════════════════════════════════════════════════
 // ADMIN VIEW
 // ═══════════════════════════════════════════════════════════
+
+// Admin "Game options" panel — configurable assumptions stored in settings.
+function _adminGameOptions(){
+  const s = S.settings||{};
+  const seg = (key, opts, dflt) => {
+    const c = s[key]||dflt;
+    return opts.map(([val,lbl])=>`<button onclick="_setSetting('${key}','${val}')" style="padding:0.3rem 0.7rem;font-size:0.75rem;border-radius:0.5rem;cursor:pointer;${c===val?'background:#16a34a;color:#fff;border:none;font-weight:600;':'background:rgba(255,255,255,0.06);color:#94a3b8;border:1px solid rgba(255,255,255,0.1);'}">${lbl}</button>`).join('');
+  };
+  const row = (title, desc, controls) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;flex-wrap:wrap;padding:0.55rem 0;border-bottom:1px solid rgba(255,255,255,0.05);">
+      <div style="flex:1;min-width:11rem;"><div style="font-size:0.82rem;color:#e2e8f0;font-weight:600;">${title}</div><div style="font-size:0.68rem;color:#64748b;">${desc}</div></div>
+      <div style="display:flex;gap:0.3rem;flex-wrap:wrap;">${controls}</div>
+    </div>`;
+  return `
+    <div style="background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;padding:1rem 1.1rem;margin-bottom:1rem;">
+      <h2 style="font-weight:600;color:white;font-size:0.95rem;margin:0 0 0.6rem;">🎛️ Game options</h2>
+      ${row('Require a photo to join','Whether new players must add an avatar', seg('avatar_policy',[['required','Required'],['optional','Optional'],['off','Off']],'required'))}
+      ${row('Repicker','Second-chance knockout bracket game (separate from its open/close state)', seg('repicker_enabled',[['on','On'],['off','Off']],'on'))}
+      ${row("Hide others' picks until lock",'Players see only their own predictions before the lock time', seg('picks_visibility',[['always','Always show'],['after-lock','Hide until lock']],'always'))}
+      <div style="padding:0.6rem 0 0.1rem;">
+        <div style="font-size:0.82rem;color:#e2e8f0;font-weight:600;margin-bottom:0.3rem;">Tournament name</div>
+        <div style="display:flex;gap:0.4rem;flex-wrap:wrap;">
+          <input id="admin-tname" type="text" value="${esc(s.tournament_name||'')}" placeholder="e.g. Euro 2028" maxlength="40" style="flex:1;min-width:10rem;background:var(--bg-input);border:1px solid var(--border-strong);border-radius:0.5rem;padding:0.4rem 0.6rem;color:var(--text);font-size:0.85rem;" />
+          <button onclick="_setSetting('tournament_name', document.getElementById('admin-tname').value.trim())" style="padding:0.4rem 0.9rem;font-size:0.78rem;background:#16a34a;color:#fff;border:none;border-radius:0.5rem;cursor:pointer;font-weight:600;">Save</button>
+        </div>
+        <div style="font-size:0.68rem;color:#64748b;margin-top:0.25rem;">Shown in the top bar and page title.</div>
+      </div>
+    </div>`;
+}
+
 function renderAdmin(){
   if(!S.adminUnlocked) return `
     <div style="max-width:22rem;margin:5rem auto 0;text-align:center;">
@@ -5287,7 +5357,6 @@ function renderAdmin(){
       <input class="text-in" type="password" id="pass-in" placeholder="Password"
         onkeydown="if(event.key==='Enter')checkPass()" style="margin-bottom:0.75rem;" />
       <button class="btn-g" onclick="checkPass()" style="width:100%;">Unlock</button>
-      <p style="color:#334155;font-size:0.75rem;margin-top:0.75rem;">Default: <code>wc2026</code></p>
     </div>`;
 
   const done=Object.keys(S.gResults).length;
@@ -5493,6 +5562,8 @@ function renderAdmin(){
       </div>
     </div>`;
     })()}
+
+    ${_adminGameOptions()}
 
     <!-- ── Manual entry (fallbacks only — results normally auto-fill from ESPN) ── -->
     <h2 style="font-size:1rem;font-weight:700;color:#94a3b8;margin:2rem 0 0.35rem;border-top:1px solid rgba(255,255,255,0.08);padding-top:1.25rem;">⚙️ Manual entry (fallbacks)</h2>
@@ -5702,7 +5773,7 @@ function renderGroupsTab(){
   const grpKeys=Object.keys(GROUPS);
   const participants=[];
   if(S.name&&Object.keys(S.gPreds).length>0) participants.push({name:S.name,gPreds:S.gPreds});
-  participants.push(...S.otherUsers.filter(_hasPicks));
+  if(picksVisible()) participants.push(...S.otherUsers.filter(_hasPicks));
 
   // Picker map for group-winner predictions + uniform team column width across all 12 groups
   _gwPickerMap = _buildGWPickerMap();
@@ -5879,6 +5950,7 @@ function renderGroupsTab(){
   }).join('');
 
   return `
+    ${!picksVisible()?`<div style="background:rgba(100,116,139,0.12);border:1px solid rgba(148,163,184,0.3);border-radius:0.5rem;padding:0.5rem 0.75rem;margin-bottom:0.75rem;font-size:0.78rem;color:#94a3b8;">🙈 Other players' picks are hidden until predictions lock — you're seeing only your own.</div>`:''}
     <div style="margin-bottom:0.75rem;">
       <p style="color:#64748b;font-size:0.8rem;">
         <span style="color:#4ade80;">■</span> Advances · <span style="color:#fbbf24;">■</span> 3rd place pool ·
@@ -6320,6 +6392,7 @@ function _shortDur(ms){
 // kicks off: counts down to the Repicker opening, then urges picks once open.
 function repickerBannerHTML(){
   if(!S.name) return '';
+  if(S.settings?.repicker_enabled==='off') return '';
   let lastG=0;
   for(let id=1; id<=72; id++){ const v=KICKOFFS[id]; if(v){ const t=new Date(v).getTime(); if(t>lastG) lastG=t; } }
   if(!lastG) return '';
@@ -7009,6 +7082,11 @@ async function saveReBracket(i){
 }
 
 function renderRepicker(){
+  if(S.settings?.repicker_enabled==='off') return `
+    <div style="text-align:center;padding:4rem 1rem;color:#64748b;">
+      <div style="font-size:2.5rem;margin-bottom:0.75rem;">🚫</div>
+      <p style="color:#e2e8f0;font-weight:600;">The Repicker is turned off for this tournament.</p>
+    </div>`;
   const repickerOpen = S.settings?.repicker_open==='true';
   const gDone = Object.keys(S.gResults||{}).length;
   if(!repickerOpen && !_isAdmin) return `
