@@ -2530,7 +2530,15 @@ function koCompare(pred, actual){
     + (pred.homeScore!=null&&pred.awayScore!=null ? ` ${pred.homeScore}–${pred.awayScore}` : '');
 
   if(inter.length===0) return {kind:'wrong', predLabel};
-  if(inter.length===1) return {kind:'half', got:inter[0], predLabel};
+  if(inter.length===1){
+    // Got one team right. Also award the advancer point if you predicted THAT
+    // team to win the match and they actually advanced.
+    const got=inter[0];
+    const predAdv  = koAdvancer(pred.home, pred.away, pred.homeScore, pred.awayScore, pred.penWinner);
+    const actAdv   = koAdvancer(aH, aA, aHS, aAS, actual.penWinner);
+    const halfAdv  = !!predAdv && predAdv===got && actAdv===got;
+    return {kind:'half', got, predLabel, halfAdv};
+  }
 
   // Both teams correct → align predicted scores to actual orientation by team
   let ph, pa;
@@ -2563,6 +2571,13 @@ function koWeights(){ return KO_ROUND_WEIGHTS[koCurveName()]; }
 // Repicker uses its own independent curve (falls back to moderate).
 function reCurveName(){ return KO_ROUND_WEIGHTS[S.settings?.re_weight_curve] ? S.settings.re_weight_curve : 'moderate'; }
 function reWeights(){ return KO_ROUND_WEIGHTS[reCurveName()]; }
+// KO point values (admin-set, mirrors the group weight_formula). Stored as
+// "matchup,exact,advancer" in settings.ko_score_formula. Defaults: 0.5 / 3 / 1.
+function koPts(){
+  const s = S.settings?.ko_score_formula;
+  if(s){ const a=String(s).split(',').map(Number); if(a.length===3 && a.every(x=>Number.isFinite(x)&&x>=0)) return {matchup:a[0], exact:a[1], advancer:a[2]}; }
+  return {matchup:0.5, exact:3, advancer:1};
+}
 function koRoundKey(id){
   if(id.startsWith('r32')) return 'r32';
   if(id.startsWith('r16')) return 'r16';
@@ -2579,18 +2594,18 @@ function koRoundKey(id){
 //   whole match × round weight
 // Returns weighted koTotal plus unweighted breakdown stats.
 function koScoreFor(kPreds){
-  const w = koWeights();
+  const w = koWeights(); const P = koPts();
   let koTotal=0, matchups=0, exacts=0, advancers=0, scored=0;
   for(const id of Object.keys(KO_VENUES)){
     const actual = S.kResults[id];
     if(!actual || !actual.home || !actual.away || actual.homeScore==null) continue; // not yet played/entered
     const c = koCompare(kPreds ? kPreds[id] : undefined, actual);
     let teams=0, resultPts=0;
-    if(c.kind==='half')       teams=1;
+    if(c.kind==='half'){ teams=1; if(c.halfAdv){ resultPts=P.advancer; advancers++; } }
     else if(c.kind==='teams') teams=2;
-    else if(c.kind==='full'){ teams=2; resultPts = c.exact?3 : c.advOk?1 : 0; if(c.exact)exacts++; else if(c.advOk)advancers++; }
+    else if(c.kind==='full'){ teams=2; resultPts = c.exact?P.exact : c.advOk?P.advancer : 0; if(c.exact)exacts++; else if(c.advOk)advancers++; }
     if(teams>0 || resultPts>0) scored++;
-    const matchupPts = 0.5*teams;
+    const matchupPts = P.matchup*teams;
     matchups += matchupPts;
     koTotal  += (matchupPts + resultPts) * (w[koRoundKey(id)] || 1);
   }
@@ -2614,7 +2629,7 @@ function rePickComplete(picks){
 // Same scoring engine for the Repicker (separate game). Maps the repicker's
 // 'final-1' slot to the actual 'final' result; no 3rd-place game.
 function koScoreForRepicker(rePicks){
-  const w = reWeights();
+  const w = reWeights(); const P = koPts();
   const ids = RE_SLOT_IDS;
   const rk = id => id.startsWith('r32')?'r32':id.startsWith('r16')?'r16':id.startsWith('qf')?'qf':id.startsWith('sf')?'sf':'final';
   let koTotal=0, matchups=0, exacts=0, advancers=0, scored=0;
@@ -2623,11 +2638,11 @@ function koScoreForRepicker(rePicks){
     if(!actual || !actual.home || !actual.away || actual.homeScore==null) continue;
     const c = koCompare(rePicks ? rePicks[id] : undefined, actual);
     let teams=0, resultPts=0;
-    if(c.kind==='half')       teams=1;
+    if(c.kind==='half'){ teams=1; if(c.halfAdv){ resultPts=P.advancer; advancers++; } }
     else if(c.kind==='teams') teams=2;
-    else if(c.kind==='full'){ teams=2; resultPts = c.exact?3 : c.advOk?1 : 0; if(c.exact)exacts++; else if(c.advOk)advancers++; }
+    else if(c.kind==='full'){ teams=2; resultPts = c.exact?P.exact : c.advOk?P.advancer : 0; if(c.exact)exacts++; else if(c.advOk)advancers++; }
     if(teams>0 || resultPts>0) scored++;
-    const mp=0.5*teams; matchups += mp;
+    const mp=P.matchup*teams; matchups += mp;
     koTotal += (mp+resultPts) * (w[rk(id)] || 1);
   }
   return { koTotal:+koTotal.toFixed(2), matchups:+matchups.toFixed(1), exacts, advancers, scored };
@@ -5012,7 +5027,7 @@ function renderCompare(){
     koOddsWeight[slot] = (d.total>0 && cnt>0) ? Math.min(ODDS_WEIGHT_CAP, +(d.total/cnt).toFixed(2)) : 1;
   }
 
-  const W=getWeights();
+  const W=getWeights(); const PK=koPts();
   const lb=allPred.map(p=>{
     let groupTotal=0,exact=0,correct=0,scored=0,bad=0,surprise=0;
     for(const [gid,pr] of Object.entries(p.gPreds)){
@@ -5030,7 +5045,8 @@ function renderCompare(){
     for(const slot of Object.keys(KO_VENUES)){
       const a=S.kResults[slot]; if(!a||!a.home||!a.away||a.homeScore==null) continue;
       const c=koCompare(p.kPreds?p.kPreds[slot]:undefined, a);
-      const resPts = c.kind==='full' ? (c.exact?3:c.advOk?1:0) : 0;
+      const resPts = c.kind==='full' ? (c.exact?PK.exact:c.advOk?PK.advancer:0)
+                   : (c.kind==='half' && c.halfAdv ? PK.advancer : 0);
       if(resPts>0) surprise += resPts * (koOddsWeight[slot]||1);
     }
     const ko=koScoreFor(p.kPreds);
@@ -5082,7 +5098,7 @@ function renderCompare(){
         ${thSort('total',   'Total',   'Weighted score (A×correct + B×exact − C×PAB) + weighted knockout points')}
         ${thSort('surprise','Surprise','Odds-weighted: each correct result (group W/D/L or KO advancer) earns its points × the crowd odds of that outcome, capped at ×'+ODDS_WEIGHT_CAP+' — calling an upset few backed is worth more')}
         ${koActive?thSort('weighted','Group','Weighted group score: A×correct + B×exact − C×PAB'):''}
-        ${koActive?thSort('koTotal',  'KO',    'Knockout points (matchup + result, weighted by round)'):''}
+        ${koActive?thSort('koTotal',  'Knockout pts', 'Knockout points: matchup (per correct team) + result (advancer / exact), weighted by round'):''}
         ${koActive?thSort('matchups', 'Match', 'Knockout matchups called right (0.5 per correct team)'):''}
         ${thSort('exact',   'Exact',   'Group exact scores predicted')}
         ${thSort('correct', 'Result✓', 'Group games where W/D/L result was correct')}
@@ -5513,11 +5529,26 @@ function renderAdmin(){
       </div>
     </div>`;})()}
 
-    ${(()=>{ const koCur=koCurveName(), reCur=reCurveName(); return `
+    ${(()=>{ const koCur=koCurveName(), reCur=reCurveName(); const KP=koPts(); return `
     <div style="background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;padding:1rem;margin-top:1.25rem;">
       <h2 style="font-weight:600;color:white;margin-bottom:0.25rem;">Knockout scoring</h2>
       <p style="color:#64748b;font-size:0.875rem;margin-bottom:0.875rem;">
-        Each KO match scores <b>0.5 per correct team</b> in the matchup, plus <b>+1</b> for the right team advancing or <b>+3</b> for the exact score (incl. penalty winner), all multiplied by a per-round weight. The two games are weighted independently.</p>
+        Each KO match scores <b>${KP.matchup} per correct team</b> in the matchup, plus <b>+${KP.advancer}</b> for the right team advancing — including when you got just one team and correctly picked them to go through — or <b>+${KP.exact}</b> for the exact score (incl. penalty winner), all multiplied by a per-round weight.</p>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:flex-end;margin-bottom:1rem;">
+        <label style="display:flex;flex-direction:column;gap:0.25rem;font-size:0.8rem;color:#64748b;">
+          Matchup (per team)
+          <input id="ko-m" type="number" min="0" step="0.5" value="${KP.matchup}" class="score-in" style="width:5rem;text-align:center;" />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:0.25rem;font-size:0.8rem;color:#64748b;">
+          Exact score
+          <input id="ko-e" type="number" min="0" step="0.5" value="${KP.exact}" class="score-in" style="width:5rem;text-align:center;" />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:0.25rem;font-size:0.8rem;color:#64748b;">
+          Advancer
+          <input id="ko-a" type="number" min="0" step="0.5" value="${KP.advancer}" class="score-in" style="width:5rem;text-align:center;" />
+        </label>
+        <button class="btn-g" onclick="saveKoPts()" style="padding:0.5rem 1rem;font-size:0.875rem;">Save</button>
+      </div>
       <div style="display:flex;gap:1rem;flex-wrap:wrap;">
         <label style="display:flex;flex-direction:column;gap:0.35rem;font-size:0.8rem;color:#64748b;flex:1;min-width:13rem;">
           Primary KO round-weight curve
@@ -5689,6 +5720,22 @@ async function saveReCurve(v){
     S.settings.re_weight_curve = v;
     render();
   }catch(e){ alert('Failed to save: '+e.message); }
+}
+
+// Save the KO point values (matchup, exact, advancer) as settings.ko_score_formula.
+async function saveKoPts(){
+  const m=parseFloat(document.getElementById('ko-m')?.value);
+  const e=parseFloat(document.getElementById('ko-e')?.value);
+  const a=parseFloat(document.getElementById('ko-a')?.value);
+  if(![m,e,a].every(x=>Number.isFinite(x)&&x>=0)){ alert('Enter non-negative numbers for all three.'); return; }
+  const val=`${m},${e},${a}`;
+  try{
+    const res=await fetch('/api/settings/ko_score_formula', {method:'PUT', headers:_authHeaders(), body:JSON.stringify({value:val})});
+    if(!res.ok) throw new Error('save failed');
+    if(!S.settings) S.settings={};
+    S.settings.ko_score_formula = val;
+    render();
+  }catch(e2){ alert('Failed to save: '+e2.message); }
 }
 
 async function delKoResult(id){
