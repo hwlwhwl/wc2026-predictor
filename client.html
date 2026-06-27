@@ -2029,7 +2029,7 @@ const S = {
   adminUnlocked: false,
   otherUsers: [],  // other participants' picks, loaded from server state
   messages:   [],  // chat messages, last 50, chronological
-  bot: { active:false, game:null, h:0, a:0, skipped:[] }, // auto-pick helper
+  bot: { active:false, game:null, h:0, a:0, skipped:[], mode:'predict', cardId:null }, // auto-pick helper
   gLive: {}, // transient — not persisted; {id:{hs,as,clock,detail}}
   predMapView: false, // transient — map vs list toggle for MD tabs
   lbSort: 'total',   // leaderboard sort column
@@ -7104,7 +7104,7 @@ function renderRepicker(){
       ? `${teamSpan(team, align==='left')}${rankBadge(team, align)}`
       : `<div style="font-size:0.82rem;color:#94a3b8;font-style:italic;">${esc(reSlotPlaceholder(team))}</div>${reCandChips(cands,align)}`;
 
-    return `<div style="background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;padding:0.75rem;margin-bottom:0.5rem;">
+    return `<div id="card-re-${id}" style="background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;padding:0.75rem;margin-bottom:0.5rem;">
       ${reCardMeta(id,date, bothKnown?home:null, bothKnown?away:null)}
       <div style="display:flex;align-items:center;gap:0.6rem;">
         <div style="flex:1;text-align:right;font-size:0.85rem;font-weight:500;">${sideName(home,homeKnown,candsHome,'right')}</div>
@@ -7164,6 +7164,13 @@ function renderRepicker(){
     </div>
 
     ${adminStatus}
+
+    ${!locked?`<div style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap;margin-bottom:0.75rem;">
+      <button onclick="${(S.bot.active&&S.bot.mode==='repicker')?'botStop()':'reBotStart()'}" class="btn-s" style="font-size:0.85rem;padding:0.5rem 0.9rem;${(S.bot.active&&S.bot.mode==='repicker')?'border-color:rgba(22,163,74,0.5);color:#16a34a;':''}">
+        ${(S.bot.active&&S.bot.mode==='repicker')?'■ Stop auto-pick':'🤖 Auto-pick helper'}
+      </button>
+      <span style="font-size:0.72rem;color:#64748b;">Suggests a plausible score for each settled knockout game — confirm or edit, one at a time.</span>
+    </div>`:''}
 
     <div style="display:flex;gap:0.25rem;overflow-x:auto;padding-bottom:0.375rem;margin-bottom:1rem;">${tabsHtml}</div>
 
@@ -7244,6 +7251,47 @@ function botGamesForTab(tab){
   return [];
 }
 const _botReal = name => !!TEAM_DATA[name];
+
+// ── Repicker auto-pick (same suggestion engine, writes to S.rePicks) ──
+// Only offers fully-settled knockout games (both teams known); skips any slot
+// still waiting on an opponent.
+function reBotNextGame(){
+  const ub = repickerUserBracket(S.rePicks);
+  const rounds=[['r32',16],['r16',8],['qf',4],['sf',2],['final',1]];
+  for(const [key,n] of rounds){
+    for(let i=1;i<=n;i++){
+      const id = key==='final'?'final-1':`${key}-${i}`;
+      const t=ub[id]; if(!t) continue;
+      if(!repickerTeamKnown(t.home)||!repickerTeamKnown(t.away)) continue; // need both teams
+      if(S.bot.skipped.includes(id)) continue;
+      const rp=S.rePicks[id];
+      if(!(rp && rp.homeScore!=null && rp.awayScore!=null))
+        return {tab:key, game:{id,home:t.home,away:t.away,ko:true}};
+    }
+  }
+  return null;
+}
+function reBotAdvance(){
+  const n=reBotNextGame();
+  if(!n){ botFinish(); return; }
+  S.bot.tab=n.tab; S.bot.game=n.game; S.bot.cardId='card-re-'+n.game.id;
+  const {h,a}=botSuggest(n.game.home,n.game.away,true); // knockouts are decisive (no draws)
+  S.bot.h=h; S.bot.a=a;
+  S.view='repicker'; S.rePickTab=n.tab;
+  render();
+  setTimeout(botHighlight,30);
+}
+function _reBotWritePick(g,h,a){
+  const rp = S.rePicks[g.id] || (S.rePicks[g.id]={home:g.home,away:g.away,homeScore:undefined,awayScore:undefined,penWinner:'',penHome:undefined,penAway:undefined});
+  rp.home=g.home; rp.away=g.away; rp.homeScore=h; rp.awayScore=a;
+  rp.penWinner=''; rp.penHome=undefined; rp.penAway=undefined;
+  _reDirty.add(g.id); persistRe();
+}
+function reBotStart(){
+  if(S.settings?.repicker_open!=='true') return;   // only when the repicker is editable
+  S.bot.active=true; S.bot.mode='repicker'; S.bot.skipped=[];
+  botAdvance();
+}
 function _botGameDone(g){
   if(g.ko){ const kp=S.kPreds[g.id]; return !!(kp && kp.homeScore!=null && kp.awayScore!=null); }
   return S.gPreds[g.id]!=null;
@@ -7262,13 +7310,14 @@ function botNextGame(){
 
 function botStart(){
   if(isLocked()) return;
-  S.bot.active=true; S.bot.skipped=[];
+  S.bot.active=true; S.bot.mode='predict'; S.bot.skipped=[];
   botAdvance();
 }
 function botAdvance(){
+  if(S.bot.mode==='repicker') return reBotAdvance();
   const n=botNextGame();
   if(!n){ botFinish(); return; }
-  S.bot.tab=n.tab; S.bot.game=n.game;
+  S.bot.tab=n.tab; S.bot.game=n.game; S.bot.cardId='card-'+(n.game.ko?'ko-':'g-')+n.game.id;
   const {h,a}=botSuggest(n.game.home,n.game.away,n.game.ko);
   S.bot.h=h; S.bot.a=a;
   S.view='predict'; S.predTab=n.tab;              // keep on the page holding this game
@@ -7295,7 +7344,8 @@ function _botWritePick(g,h,a){
 }
 function botConfirm(){
   if(!S.bot.game) return;
-  _botWritePick(S.bot.game, S.bot.h, S.bot.a);
+  if(S.bot.mode==='repicker') _reBotWritePick(S.bot.game, S.bot.h, S.bot.a);
+  else _botWritePick(S.bot.game, S.bot.h, S.bot.a);
   botAdvance();
 }
 function botSkip(){
@@ -7312,8 +7362,7 @@ function botFinish(){
 function botHighlight(){
   document.querySelectorAll('.bot-target').forEach(el=>el.classList.remove('bot-target'));
   if(!S.bot.active || !S.bot.game) return;
-  const id = (S.bot.game.ko?'card-ko-':'card-g-')+S.bot.game.id;
-  const el = document.getElementById(id);
+  const el = document.getElementById(S.bot.cardId);
   if(el){ el.classList.add('bot-target'); el.scrollIntoView({block:'center',behavior:'smooth'}); }
   _positionBotPop();
   setTimeout(_positionBotPop, 400); // settle after the smooth scroll
@@ -7340,7 +7389,7 @@ function _renderBotBar(){
 function _positionBotPop(){
   const pop=document.querySelector('#bot-bar .bot-pop');
   if(!pop || !S.bot.game) return;
-  const card=document.getElementById((S.bot.game.ko?'card-ko-':'card-g-')+S.bot.game.id);
+  const card=document.getElementById(S.bot.cardId);
   if(!card){ pop.style.visibility='hidden'; return; }
   pop.style.visibility='visible';
   const r=card.getBoundingClientRect();
