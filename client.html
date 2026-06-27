@@ -5724,17 +5724,17 @@ function renderGroupsTab(){
       : (val===mx?'#4ade80':val===mn?'#f87171':'#94a3b8');
   }
 
-  // Distribution of one metric across the field as a small histogram, with the
-  // viewer's own value highlighted (gold bar + caret) where their score lands.
+  // Compact distribution of one metric: metric name on the left, a tiny field
+  // histogram on the right, and the viewer's own score printed on top of the bar
+  // at their value (no axis/scale).
   function metricDistViz(m, stats){
     const key=m.key;
     const rows=stats.filter(s=> key==='positions' ? s.positions!==null : s[key]!==null);
     const den=m.den();
-    const labelRow = extra => `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:0.4rem;margin-bottom:0.05rem;">
-        <span style="font-size:0.66rem;color:#94a3b8;font-weight:600;white-space:nowrap;" title="${m.tip||''}">${m.label}</span>${extra}</div>`;
+    const label=`<span style="flex:0 0 4.5rem;text-align:right;font-size:0.66rem;color:#94a3b8;font-weight:600;white-space:nowrap;" title="${m.tip||''}">${m.label}</span>`;
     if(!rows.length){
-      return `<div style="margin-bottom:0.5rem;">${labelRow('')}
-        <div style="font-size:0.6rem;color:#475569;">— once all group games are played —</div></div>`;
+      return `<div style="display:flex;align-items:center;gap:0.4rem;margin-bottom:0.3rem;">${label}
+        <span style="flex:1;font-size:0.58rem;color:#475569;">— after all group games —</span></div>`;
     }
     const vals=rows.map(s=>s[key]);
     let lo=0, hi;
@@ -5745,25 +5745,22 @@ function renderGroupsTab(){
     const maxC=Math.max(...counts,1);
     const viewer=rows.find(s=>s.name===S.name);
     const vVal=viewer?viewer[key]:null;
-    const W=100,H=30,padX=2,padTop=2,padBot=3, plotH=H-padTop-padBot, axisY=padTop+plotH;
-    const slot=(W-2*padX)/nb, bw=slot*0.66;
+    const W=100,H=20,padX=1, plotH=H-1, axisY=H-0.5;
+    const slot=(W-2*padX)/nb, bw=slot*0.7;
     let bars='';
     counts.forEach((c,i)=>{ if(!c) return;
-      const cx=padX+slot*(i+0.5), bh=Math.max(0.8,(c/maxC)*plotH), you=vVal!=null&&(lo+i)===vVal;
-      bars+=`<rect x="${(cx-bw/2).toFixed(1)}" y="${(axisY-bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="0.5" fill="${you?'#fbbf24':'rgba(148,163,184,0.45)'}"/>`;
+      const cx=padX+slot*(i+0.5), bh=Math.max(1,(c/maxC)*plotH), you=vVal!=null&&(lo+i)===vVal;
+      bars+=`<rect x="${(cx-bw/2).toFixed(1)}" y="${(axisY-bh).toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(1)}" rx="0.4" fill="${you?'#fbbf24':'rgba(148,163,184,0.4)'}"/>`;
     });
-    let caret='';
+    const svg=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:20px;display:block;">
+      <line x1="${padX}" y1="${axisY}" x2="${W-padX}" y2="${axisY}" stroke="rgba(255,255,255,0.12)" stroke-width="0.5"/>${bars}</svg>`;
+    let chip='';
     if(vVal!=null){ const cx=padX+slot*((vVal-lo)+0.5);
-      caret=`<polygon points="${(cx-2).toFixed(1)},${(axisY+0.3).toFixed(1)} ${(cx+2).toFixed(1)},${(axisY+0.3).toFixed(1)} ${cx.toFixed(1)},${(axisY+2.6).toFixed(1)}" fill="#fbbf24"/>`; }
-    const svg=`<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:30px;display:block;">
-      <line x1="${padX}" y1="${axisY}" x2="${W-padX}" y2="${axisY}" stroke="rgba(255,255,255,0.14)" stroke-width="0.5"/>${bars}${caret}</svg>`;
-    const youTxt = vVal!=null
-      ? `<span style="font-size:0.62rem;color:#fbbf24;font-weight:700;">you: ${vVal}${den!=null?`/${den}`:''}</span>`
-      : `<span style="font-size:0.6rem;color:#475569;">field of ${rows.length}</span>`;
-    return `<div style="margin-bottom:0.5rem;">
-      ${labelRow(youTxt)}
-      ${svg}
-      <div style="display:flex;justify-content:space-between;font-size:0.55rem;color:#475569;line-height:1;margin-top:0.05rem;"><span>${lo}</span><span>${hi}</span></div>
+      chip=`<span style="position:absolute;left:${cx.toFixed(1)}%;top:-1px;transform:translateX(-50%);background:#0d1f35;color:#fbbf24;font-size:0.56rem;font-weight:700;line-height:1.1;padding:0 0.1rem;border-radius:2px;">${vVal}</span>`;
+    }
+    return `<div style="display:flex;align-items:center;gap:0.4rem;margin-bottom:0.3rem;">
+      ${label}
+      <div style="flex:1;position:relative;">${svg}${chip}</div>
     </div>`;
   }
 
@@ -5864,7 +5861,7 @@ function renderGroupsTab(){
         {label:'Standings', key:'positions', lowerBetter:false, den:()=>allDone?4:null,   tip:'How many of the 4 final group positions each person predicted correctly (shown once all group games are played)'},
       ];
 
-      statsHTML=`<div style="padding:0.55rem 0.7rem;min-width:11rem;">${metrics.map(m=>metricDistViz(m,stats)).join('')}</div>`;
+      statsHTML=`<div style="padding:0.6rem 0.6rem 0.3rem;min-width:9.5rem;">${metrics.map(m=>metricDistViz(m,stats)).join('')}</div>`;
     } else {
       statsHTML=`<div style="padding:1rem;font-size:0.8rem;color:#334155;display:flex;align-items:center;justify-content:center;height:100%;">Import predictions to compare</div>`;
     }
