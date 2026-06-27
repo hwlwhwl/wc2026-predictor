@@ -3169,23 +3169,6 @@ async function _saveAvatar(){
     console.warn('Avatar save failed:', e.message);
   }
 }
-function _showSaveOk(){
-  const el = document.getElementById('conn-banner');
-  if(!el) return;
-  if(el.dataset.bannerType && el.dataset.bannerType!=='save-ok') return; // don't mask an error/disconnect
-  el.textContent = '✓ Saved';
-  el.style.display = 'block';
-  el.style.background = '#16a34a';
-  el.dataset.bannerType = 'save-ok';
-  clearTimeout(_saveFailTimer);
-  _saveFailTimer = setTimeout(() => {
-    if(el.dataset.bannerType === 'save-ok'){
-      el.style.display = 'none';
-      el.style.background = '#7c3aed';
-      delete el.dataset.bannerType;
-    }
-  }, 1500);
-}
 function _showSaveError(msg){
   const el = document.getElementById('conn-banner');
   if(!el) return;
@@ -7114,7 +7097,6 @@ async function _doPersistRe(){
     if(res.status===401){ _handleSessionExpired(); return; }
     if(!res.ok){ _showSaveError('⚠ Repicker not saved — try again'); return; }
     sending.forEach(id=>_reDirty.delete(id));    // confirmed saved → server can take over again
-    _showSaveOk();
   }catch(e){ _showSaveError('⚠ Repicker not saved (network) — try again'); }
 }
 function _reEnsure(mid){
