@@ -3001,7 +3001,7 @@ function _applyServerState(data){
   if(myRePicks){
     const serverRe = myRePicks[1] || {};
     for(const [id, pick] of Object.entries(serverRe)){
-      if(S.rePicks[id] == null) S.rePicks[id] = pick;
+      if(!_reDirty.has(id)) S.rePicks[id] = pick;   // server is authoritative unless an edit is in flight
     }
   }
 
@@ -3111,6 +3111,23 @@ async function _saveAvatar(){
   }catch(e){
     console.warn('Avatar save failed:', e.message);
   }
+}
+function _showSaveOk(){
+  const el = document.getElementById('conn-banner');
+  if(!el) return;
+  if(el.dataset.bannerType && el.dataset.bannerType!=='save-ok') return; // don't mask an error/disconnect
+  el.textContent = '✓ Saved';
+  el.style.display = 'block';
+  el.style.background = '#16a34a';
+  el.dataset.bannerType = 'save-ok';
+  clearTimeout(_saveFailTimer);
+  _saveFailTimer = setTimeout(() => {
+    if(el.dataset.bannerType === 'save-ok'){
+      el.style.display = 'none';
+      el.style.background = '#7c3aed';
+      delete el.dataset.bannerType;
+    }
+  }, 1500);
 }
 function _showSaveError(msg){
   const el = document.getElementById('conn-banner');
@@ -6899,13 +6916,17 @@ function reCardMeta(id, date, home, away){
 
 // ── Repicker score handlers (persist to /api/re-picks, debounced) ──
 let _reSaveTimer=null;
+const _reDirty=new Set(); // repicker match ids with edits not yet confirmed saved
 function persistRe(){ clearTimeout(_reSaveTimer); _reSaveTimer=setTimeout(_doPersistRe,600); }
 async function _doPersistRe(){
   if(!_token) return;
+  const sending=[..._reDirty];                  // ids whose edits this save covers
   try{
     const res=await fetch('/api/re-picks',{method:'PUT',headers:_authHeaders(),body:JSON.stringify({picks:S.rePicks})});
     if(res.status===401){ _handleSessionExpired(); return; }
-    if(!res.ok) _showSaveError('⚠ Repicker not saved — try again');
+    if(!res.ok){ _showSaveError('⚠ Repicker not saved — try again'); return; }
+    sending.forEach(id=>_reDirty.delete(id));    // confirmed saved → server can take over again
+    _showSaveOk();
   }catch(e){ _showSaveError('⚠ Repicker not saved (network) — try again'); }
 }
 function _reEnsure(mid){
@@ -6920,7 +6941,7 @@ function setReScore(mid, side, val){
   if(rp.homeScore!==undefined && rp.awayScore===undefined) rp.awayScore=0;
   if(rp.awayScore!==undefined && rp.homeScore===undefined) rp.homeScore=0;
   if(rp.homeScore!==undefined && rp.awayScore!==undefined && rp.homeScore!==rp.awayScore){ rp.penHome=undefined; rp.penAway=undefined; rp.penWinner=''; }
-  persistRe();
+  _reDirty.add(mid); persistRe();
   if(rp.homeScore!==undefined && rp.awayScore!==undefined) render(); // re-render to flow the bracket forward
 }
 function adj_re(mid, side, delta){
@@ -6934,7 +6955,7 @@ function setRePenScore(mid, side, val){
   if(side==='h') rp.penHome=v; else rp.penAway=v;
   const {valid}=_penIsValid(rp.penHome, rp.penAway);
   rp.penWinner = valid ? (rp.penHome>rp.penAway?rp.home:rp.away) : '';
-  persistRe(); render();
+  _reDirty.add(mid); persistRe(); render();
 }
 function adj_repen(mid, side, delta){
   const rp=_reEnsure(mid);
