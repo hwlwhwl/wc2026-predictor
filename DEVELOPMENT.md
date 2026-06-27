@@ -1,5 +1,11 @@
 # WC2026 Predictor — Development Notes
 
+> **See [`SPEC.md`](SPEC.md) for the authoritative, up-to-date build specification** —
+> including the full feature set and the "swap kit" of tournament-specific data needed
+> to recreate this app for a new tournament. This file is older background notes; a few
+> "known issues" below (sequential R16 pairing, missing third-place logic) have since
+> been implemented and are superseded by `SPEC.md`.
+
 ## What This Is
 
 A shared pick'em app for a small friend group to predict World Cup 2026 results.
