@@ -6836,6 +6836,67 @@ function reScoreCell(matchId, side, val, locked, isPen){
 function reSlotPlaceholder(team){ return !team ? 'TBD' : (/3rd-place/.test(team) ? '3rd-place TBD' : team); }
 function reSideMuted(team){ return `<span style="color:#64748b;font-style:italic;font-weight:400;">${esc(reSlotPlaceholder(team))}</span>`; }
 
+// Possible teams for an undecided R32 slot (group winner/runner-up, or a 3rd-place
+// slot → the current 3rd of each group that could still feed that slot).
+function repickerSlotCandidates(pos){
+  const m3rd = pos.match(/^3rd-slot-(1[A-L])$/);
+  if(m3rd){
+    const lock = thirdSlotLocks()[m3rd[1]];
+    if(lock && lock.lockedName) return [];
+    return (lock ? lock.groups : []).map(g=>actualGroupStandings(g)[2]?.name).filter(Boolean);
+  }
+  const m = pos.match(/^([12])([A-L])$/); if(!m) return [];
+  const wantPos=+m[1], g=m[2];
+  const confirm=groupConfirm(g);
+  for(const name of GROUPS[g]) if(confirm[name] && confirm[name].pos===wantPos) return []; // locked
+  return top2Candidates(g);
+}
+// The feeder match id whose winner fills one side of a later-round repicker slot.
+function reFeederId(id, side){
+  let m;
+  if(m=id.match(/^r16-(\d+)$/)){ const p=RE_R32_PAIRS[+m[1]-1]; return p?`r32-${side==='home'?p[0]:p[1]}`:null; }
+  if(m=id.match(/^qf-(\d+)$/)) { const p=RE_R16_PAIRS[+m[1]-1]; return p?`r16-${side==='home'?p[0]:p[1]}`:null; }
+  if(m=id.match(/^sf-(\d+)$/)) { const p=RE_QF_PAIRS[+m[1]-1];  return p?`qf-${side==='home'?p[0]:p[1]}`:null; }
+  if(id==='final-1') return side==='home'?'sf-1':'sf-2';
+  return null;
+}
+// Candidate teams for an unsettled side of any repicker match (R32 → group/3rd
+// possibilities; later rounds → the two participants of the feeding match).
+function reSideCandidates(id, side, userBracket){
+  const r32 = R32_FIXED.find(x=>x.id===id);
+  if(r32) return repickerSlotCandidates(side==='home'?r32.posA:r32.posB);
+  const f = reFeederId(id, side); if(!f) return [];
+  const fb = userBracket[f]||{};
+  return [fb.home, fb.away].filter(repickerTeamKnown);
+}
+// Small flag chips listing the possible teams for an unsettled slot.
+function reCandChips(cands, align){
+  if(!cands || !cands.length) return '';
+  const shown = cands.slice(0,6);
+  const chips = shown.map(t=>`<span style="display:inline-flex;align-items:center;gap:0.15rem;font-size:0.66rem;color:#94a3b8;background:rgba(255,255,255,0.05);border-radius:0.3rem;padding:0.05rem 0.3rem;white-space:nowrap;">${flag(t)} ${esc(shortTeamName(t))}</span>`).join(' ');
+  const more = cands.length>shown.length ? ` <span style="font-size:0.62rem;color:#475569;">+${cands.length-shown.length}</span>` : '';
+  return `<div style="display:flex;flex-wrap:wrap;gap:0.2rem;justify-content:${align==='right'?'flex-end':'flex-start'};margin-top:0.2rem;">${chips}${more}</div>`;
+}
+// Kickoff time + venue + weather (+ dossier when both teams are known) for a card.
+function reCardMeta(id, date, home, away){
+  const iso = KICKOFFS[id];
+  const kick = iso ? '🕒 '+esc(fmtKickoff(iso)) : esc(date||'');
+  let venue='';
+  const city = KO_VENUES[id];
+  if(city){
+    const c=CITY_COORDS[city];
+    const wd=c&&date&&_weatherCache[`${c.lat},${c.lon},${date}`];
+    const wx=wd?` ${WMO_ICONS[wd.code]||'🌡'} ${wd.isHistorical?'~':''}${wd.tempMax}°C`:'';
+    venue=`<span style="font-size:0.7rem;color:#64748b;">📍 ${esc(city)}${wx}</span>`;
+  }
+  const dos = (home&&away)?dossierBtn(home,away):'';
+  return `<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.4rem;flex-wrap:wrap;">
+    ${kick?`<span style="font-size:0.7rem;color:#64748b;">${kick}</span>`:''}
+    ${venue}
+    ${dos?`<div style="margin-left:auto;">${dos}</div>`:''}
+  </div>`;
+}
+
 // ── Repicker score handlers (persist to /api/re-picks, debounced) ──
 let _reSaveTimer=null;
 function persistRe(){ clearTimeout(_reSaveTimer); _reSaveTimer=setTimeout(_doPersistRe,600); }
@@ -6941,21 +7002,35 @@ function renderRepicker(){
     return `<button class="${cls}" onclick="S.rePickTab='${r.key}';render()">${allDone&&r.key!==tab?'✓ ':''} ${r.label}</button>`;
   }).join('');
 
+  const koDate = {}; koVenueDates().forEach(({id,date})=>{ koDate[id]=date; });
   const matchesHtml = round.ids.map(id=>{
     const t = userBracket[id]||{};
     const home=t.home, away=t.away;
     const homeKnown=repickerTeamKnown(home), awayKnown=repickerTeamKnown(away);
+    const candsHome = homeKnown ? [] : reSideCandidates(id,'home',userBracket);
+    const candsAway = awayKnown ? [] : reSideCandidates(id,'away',userBracket);
+    const date = koDate[id];
 
     // A game is pickable as soon as at least one side is a settled, known team.
-    // With neither side settled, it stays locked.
+    // With neither side settled, it stays locked — but still preview the possible
+    // teams and the venue/kickoff so it's not a blank "TBD".
     if(!homeKnown && !awayKnown){
-      const bothTBD = !home && !away;
-      const note = bothTBD
+      const note = (!home && !away)
         ? (id.startsWith('r32-') ? 'awaiting group results' : 'finish the previous round')
         : 'matchup not settled yet';
-      const label = bothTBD ? '— TBD —'
-        : `${esc(reSlotPlaceholder(home))} <span style="color:#475569;">vs</span> ${esc(reSlotPlaceholder(away))}`;
-      return `<div style="background:#0d1f35;border:1px solid rgba(255,255,255,0.06);border-radius:0.75rem;padding:0.875rem;margin-bottom:0.5rem;text-align:center;color:#94a3b8;font-size:0.82rem;line-height:1.4;">🔒 ${label}<div style="color:#475569;font-size:0.68rem;margin-top:0.2rem;">— ${note} —</div></div>`;
+      const sideBlock=(team,cands,align)=>`<div style="flex:1;text-align:${align};">
+        <div style="font-size:0.82rem;color:#94a3b8;">${esc(reSlotPlaceholder(team))}</div>
+        ${reCandChips(cands,align)}
+      </div>`;
+      return `<div style="background:#0d1f35;border:1px solid rgba(255,255,255,0.06);border-radius:0.75rem;padding:0.75rem;margin-bottom:0.5rem;">
+        ${reCardMeta(id,date,null,null)}
+        <div style="display:flex;align-items:flex-start;gap:0.6rem;">
+          ${sideBlock(home,candsHome,'right')}
+          <span style="color:#334155;font-weight:700;align-self:center;">🔒</span>
+          ${sideBlock(away,candsAway,'left')}
+        </div>
+        <div style="color:#475569;font-size:0.66rem;margin-top:0.4rem;text-align:center;">— ${note} —</div>
+      </div>`;
     }
 
     // Sync teams into the stored pick. Reset the slot only when a previously-known
@@ -7004,16 +7079,22 @@ function renderRepicker(){
       ? `<div style="text-align:center;font-size:0.66rem;color:#64748b;margin-top:0.4rem;">opponent not settled yet — your score still counts once it is</div>`
       : '';
 
+    const sideName=(team,known,cands,align)=> known
+      ? `${teamSpan(team, align==='left')}${rankBadge(team, align)}`
+      : `<div style="font-size:0.82rem;color:#94a3b8;font-style:italic;">${esc(reSlotPlaceholder(team))}</div>${reCandChips(cands,align)}`;
+
     return `<div style="background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;padding:0.75rem;margin-bottom:0.5rem;">
+      ${reCardMeta(id,date, bothKnown?home:null, bothKnown?away:null)}
       <div style="display:flex;align-items:center;gap:0.6rem;">
-        <div style="flex:1;text-align:right;font-size:0.85rem;font-weight:500;">${homeKnown?teamSpan(home):reSideMuted(home)}</div>
+        <div style="flex:1;text-align:right;font-size:0.85rem;font-weight:500;">${sideName(home,homeKnown,candsHome,'right')}</div>
         ${reScoreCell(id,'h',hv,locked,false)}
         <span style="color:#334155;font-weight:700;">–</span>
         ${reScoreCell(id,'a',av,locked,false)}
-        <div style="flex:1;text-align:left;font-size:0.85rem;font-weight:500;">${awayKnown?teamSpan(away,true):reSideMuted(away)}</div>
+        <div style="flex:1;text-align:left;font-size:0.85rem;font-weight:500;">${sideName(away,awayKnown,candsAway,'left')}</div>
       </div>
       ${penSection}
       ${oneSideNote}
+      ${bothKnown?`<div style="margin-top:0.5rem;padding-top:0.5rem;border-top:1px solid rgba(255,255,255,0.06);">${infoPanel(home,away,true)}</div>`:''}
       ${actualNote}
     </div>`;
   }).join('');
