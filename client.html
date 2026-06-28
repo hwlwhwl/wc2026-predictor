@@ -3886,9 +3886,26 @@ function _fireGoalAnim(mid, side, delay){
 }
 
 function render(){
+  // If the user is mid-edit in a score input, remember it so we can restore
+  // focus, caret and scroll after the innerHTML swap — otherwise a full render
+  // steals focus and jumps the page to the top on every keystroke.
+  let _restore = null;
+  const _ae = document.activeElement;
+  if(_ae && _ae.tagName==='INPUT' && _ae.dataset && _ae.dataset.mid){
+    _restore = { mid:_ae.dataset.mid, side:_ae.dataset.side,
+      start:_ae.selectionStart, end:_ae.selectionEnd, scroll:window.scrollY };
+  }
   // Destroy any live Leaflet instance before replacing the DOM
   if(_predMap){ _predMap.remove(); _predMap = null; }
   document.getElementById('app').innerHTML = `<div id="repicker-cd">${repickerBannerHTML()}</div>` + renderMain();
+  if(_restore){
+    const inp = document.querySelector(`input[data-mid="${_restore.mid}"][data-side="${_restore.side}"]`);
+    if(inp){
+      try{ inp.focus({preventScroll:true}); }catch(e){ inp.focus(); }
+      try{ inp.setSelectionRange(_restore.start, _restore.end); }catch(e){ /* number inputs can't */ }
+      window.scrollTo(0, _restore.scroll);
+    }
+  }
   _updateNavUser(); // Keep nav avatar current whenever state changes
   _renderBotBar();  // Keep the auto-pick bar in sync (lives outside #app)
   if(_pendingGoalAnim){
@@ -3916,7 +3933,11 @@ function scheduleRender(){
       // Mid-edit — defer; the user's next change re-renders with merged state.
       return;
     }
+    // A background broadcast should never move the viewport — keep the user's
+    // scroll position across the repaint (render() resets it on innerHTML swap).
+    const sy = window.scrollY;
     render();
+    window.scrollTo(0, sy);
   });
 }
 
@@ -7274,20 +7295,37 @@ function _reEnsure(mid){
   return S.rePicks[mid];
 }
 function inputRe(mid,side,inp){ setReScore(mid,side,inp.value); }
+function _reDrawState(rp){
+  return repickerTeamKnown(rp.home) && repickerTeamKnown(rp.away)
+    && rp.homeScore!=null && rp.awayScore!=null && rp.homeScore===rp.awayScore;
+}
 function setReScore(mid, side, val){
   const rp=_reEnsure(mid);
+  const wasDraw=_reDrawState(rp);
   const v=val===''?undefined:Math.max(0,Math.min(20,parseInt(val)||0));
   if(side==='h') rp.homeScore=v!=null?v:0; else rp.awayScore=v!=null?v:0;
+  // Default the unset side to 0 so one score resolves the match (mirrors the
+  // main KO page); reflect it in the DOM without a full re-render.
   if(rp.homeScore!==undefined && rp.awayScore===undefined) rp.awayScore=0;
   if(rp.awayScore!==undefined && rp.homeScore===undefined) rp.homeScore=0;
   if(rp.homeScore!==undefined && rp.awayScore!==undefined && rp.homeScore!==rp.awayScore){ rp.penHome=undefined; rp.penAway=undefined; rp.penWinner=''; }
   _reDirty.add(mid); persistRe();
-  if(rp.homeScore!==undefined && rp.awayScore!==undefined) render(); // re-render to flow the bracket forward
+  const otherSide=side==='h'?'a':'h';
+  const otherInp=document.querySelector(`input[data-mid="re-${mid}"][data-side="${otherSide}"]`);
+  if(otherInp && otherInp.value==='') otherInp.value = side==='h' ? rp.awayScore : rp.homeScore;
+  // Only re-render when the penalty-shootout section needs to appear/disappear.
+  // For decisive scores the visible card is unchanged, so we skip the rebuild —
+  // this is what makes entry seamless from one game to the next. The downstream
+  // bracket on the other round tabs is recomputed when the user switches tabs.
+  if(_reDrawState(rp) !== wasDraw) render();
 }
 function adj_re(mid, side, delta){
+  const inp=document.querySelector(`input[data-mid="re-${mid}"][data-side="${side}"]`);
   const rp=_reEnsure(mid);
   const cur=side==='h'?(rp.homeScore??0):(rp.awayScore??0);
-  setReScore(mid, side, String(Math.max(0,Math.min(20,cur+delta))));
+  const nv=Math.max(0,Math.min(20,cur+delta));
+  if(inp) inp.value=nv;                 // update the field directly so no render is needed
+  setReScore(mid, side, String(nv));
 }
 function setRePenScore(mid, side, val){
   const rp=_reEnsure(mid);
