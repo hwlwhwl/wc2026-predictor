@@ -2692,10 +2692,12 @@ function koActualRoundTeams(){
 function koRoundTeamCounts(p, actualByRound){
   const counts={}; RT_ROUNDS.forEach(r=>counts[r]=0); let total=0;
   const predBy={r32:predictedR32Set(p),r16:new Set(),qf:new Set(),sf:new Set(),final:new Set()};
-  const kp=p.kPreds||{};
-  for(const [id,pr] of Object.entries(kp)){
-    if(!pr) continue; const rd=koRoundKey(id); if(rd==='r32'||!predBy[rd]) continue;
-    if(pr.home) predBy[rd].add(pr.home); if(pr.away) predBy[rd].add(pr.away);
+  // R16+ from the ORIGINAL predicted bracket (advancers), not the drifted stored
+  // team names — consistent with scoring and the matchups-right count.
+  const bracket=userPredBracket(p);
+  for(const [id,g] of Object.entries(bracket)){
+    const rd=koRoundKey(id); if(rd==='r32'||!predBy[rd]) continue;
+    if(g.home) predBy[rd].add(g.home); if(g.away) predBy[rd].add(g.away);
   }
   for(const r of RT_ROUNDS){
     let c=0; for(const t of predBy[r]) if(actualByRound[r].has(t)) c++;
@@ -2739,9 +2741,25 @@ function userPredBracket(p){
   const r16=[[11,13],[0,2],[1,6],[8,15],[7,4],[10,12],[5,3],[9,14]].map(([a,b],i)=>({id:`r16-${i+1}`, home:adv(r32[a]), away:adv(r32[b])}));
   const qf=[[0,1],[2,3],[4,5],[6,7]].map(([a,b],i)=>({id:`qf-${i+1}`, home:adv(r16[a]), away:adv(r16[b])}));
   const sf=[{id:'sf-1',home:adv(qf[0]),away:adv(qf[2])},{id:'sf-2',home:adv(qf[1]),away:adv(qf[3])}];
-  const fin=[{id:'final',home:adv(sf[0]),away:adv(sf[1])}];
+  const lose=g=>{ const a=adv(g); return a==null?null : (a===g.home?g.away:g.home); };
+  const fin=[{id:'final',home:adv(sf[0]),away:adv(sf[1])},{id:'3rd',home:lose(sf[0]),away:lose(sf[1])}];
   [...r32,...r16,...qf,...sf,...fin].forEach(g=>{ map[g.id]={home:g.home, away:g.away}; });
   return map;
+}
+// A participant's KO picks rebuilt for SCORING: original predicted teams per slot
+// (userPredBracket) + their own scoreline (the home/away side is positionally
+// stable, so drifted stored team names don't matter). Empty for anyone who
+// didn't predict the full group stage → no knockout points, by design.
+function userKoScoringPicks(p){
+  const bracket=userPredBracket(p); const kp=p.kPreds||{}; const out={};
+  for(const id of Object.keys(bracket)){
+    const t=bracket[id]; const pick=kp[id]||{};
+    if(!t.home||!t.away) continue;                         // unresolved branch (a pick wasn't made upstream)
+    out[id]={ home:t.home, away:t.away,
+      homeScore:pick.homeScore, awayScore:pick.awayScore,
+      penWinner:(pick.penWinner===t.home||pick.penWinner===t.away)?pick.penWinner:'' };
+  }
+  return out;
 }
 // Knockout matchups a participant called right, per round: actual pairings
 // (real results only) where their predicted bracket placed BOTH teams in that
@@ -5273,16 +5291,20 @@ function renderCompare(){
     }
     // Skipped a played game → treat as a wrong pick: +3 to Points-are-Bad.
     for(const game of completed){ if(!p.gPreds[game.id]) bad += 3; }
+    // Knockout is scored against each person's ORIGINAL predicted bracket
+    // (reconstructed from their locked group + KO picks), not the stored team
+    // names (which the live bracket can drift). No full group bracket → no KO.
+    const koPicks=userKoScoringPicks(p);
     // KO surprise: correctly advancing a team few backed earns its result points
     // (1 advancer / 3 exact) × the capped crowd odds of that advancer.
     for(const slot of Object.keys(KO_VENUES)){
       const a=S.kResults[slot]; if(!a||!a.home||!a.away||a.homeScore==null) continue;
-      const c=koCompare(p.kPreds?p.kPreds[slot]:undefined, a);
+      const c=koCompare(koPicks[slot], a);
       const resPts = c.kind==='full' ? (c.exact?PK.exact:c.advOk?PK.advancer:0)
                    : (c.kind==='half' && c.halfAdv ? PK.advancer : 0);
       if(resPts>0) surprise += resPts * (koOddsWeight[slot]||1);
     }
-    const ko=koScoreFor(p.kPreds);
+    const ko=koScoreFor(koPicks);
     const rt=koRoundTeamCounts(p, actualByRound);          // teams that reached each round
     const roundTeamsPts=+(RTW*RT_ROUNDS.reduce((s,r)=>s+rt[r]*(RTC[r]||1),0)).toFixed(2); // 0 unless admin sets a weight
     // Total = the weighted group formula (A×correct + B×exact − C×PAB) + weighted KO
