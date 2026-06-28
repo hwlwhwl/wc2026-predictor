@@ -1917,6 +1917,12 @@ function reHasPick(picks, id){
   const p = picks && picks[id];
   return !!(p && p.home && p.away && p.homeScore!=null && p.awayScore!=null);
 }
+// True once the knockouts have kicked off (the earliest KO kickoff time passed).
+function koHasStarted(){
+  let min=Infinity;
+  for(const slot in KICKOFFS){ if(KO_VENUES[slot]!=null){ const t=new Date(KICKOFFS[slot]).getTime(); if(!isNaN(t)&&t<min) min=t; } }
+  return min!==Infinity && Date.now()>=min;
+}
 // Engagement gate: you must pick at least half (8) of the 16 Round-of-32 games
 // to unlock the later rounds and to count on the Repicker leaderboard. Stops
 // low-effort players from swooping in to pick R16+ once the field is known.
@@ -5074,15 +5080,16 @@ function _koResultDist(slot, homeT, awayT, parts){
 // The viewer's own pick for an ACTUAL matchup, reoriented to the given home/away.
 // Prefers the same slot, then any slot holding the same pair (a bracket may seat
 // the matchup elsewhere), so the shown score always matches the teams displayed.
-function _userKoPickForActual(slot, homeT, awayT){
+function _userKoPickForActual(slot, homeT, awayT, src){
+  src = src || S.kPreds;
   const tryKp=kp=>{
     if(!kp||kp.homeScore==null||kp.awayScore==null) return null;
     if(kp.home===homeT&&kp.away===awayT) return {hs:kp.homeScore, as:kp.awayScore, pen:kp.penWinner||''};
     if(kp.home===awayT&&kp.away===homeT) return {hs:kp.awayScore, as:kp.homeScore, pen:kp.penWinner||''};
     return null;
   };
-  let r=tryKp(S.kPreds[slot]); if(r) return r;
-  for(const k in S.kPreds){ if(k===slot) continue; r=tryKp(S.kPreds[k]); if(r) return r; }
+  let r=tryKp(src[slot]); if(r) return r;
+  for(const k in src){ if(k===slot) continue; r=tryKp(src[k]); if(r) return r; }
   return null;
 }
 // Actual KO matchup teams, resolved from real results (R32 from real qualifiers;
@@ -5097,8 +5104,12 @@ function _actualKoTeams(){
 }
 // Compact "today's games" strip for the leaderboard (group + knockout): the
 // live/final/upcoming score plus the high-level pick split, result underlined.
-function todaysGamesPanel(parts){
+// repickMode: show only knockout games and source the viewer's pick + crowd
+// split from the Repicker bracket (parts carry rePicks as `kPreds`).
+function todaysGamesPanel(parts, repickMode){
   const todayKey = localDateKey(new Date().toISOString());
+  const viewerSrc = repickMode ? S.rePicks : S.kPreds;
+  const reSlot = slot => (repickMode && slot==='final') ? 'final-1' : slot;
   const seg=(n,color,on)=>`<span style="color:${color};font-weight:${on?800:600};${on?'text-decoration:underline;':''}">${n}</span>`;
   const pickCell=(txt,color)=>`<span title="Your pick" style="flex-shrink:0;width:2.9rem;text-align:left;font-family:monospace;font-size:0.74rem;font-weight:700;color:${color};">${txt}</span>`;
   const rowHTML=(pick,homeT,awayT,mid,dist)=>`<div style="display:flex;align-items:center;gap:0.5rem;padding:0.35rem 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:0.82rem;">
@@ -5110,8 +5121,8 @@ function todaysGamesPanel(parts){
     </div>`;
 
   const entries=[];
-  for(const g of GROUP_GAMES){ const iso=gameKickoff(g); if(iso && localDateKey(iso)===todayKey) entries.push({iso, kind:'group', g}); }
-  const koToday = Object.keys(KO_VENUES).filter(slot=>{ const iso=KICKOFFS[slot]; return iso && localDateKey(iso)===todayKey; });
+  if(!repickMode){ for(const g of GROUP_GAMES){ const iso=gameKickoff(g); if(iso && localDateKey(iso)===todayKey) entries.push({iso, kind:'group', g}); } }
+  const koToday = Object.keys(KO_VENUES).filter(slot=>{ if(repickMode && slot==='3rd') return false; const iso=KICKOFFS[slot]; return iso && localDateKey(iso)===todayKey; });
   if(koToday.length){ const actualKo=_actualKoTeams(); for(const slot of koToday) entries.push({iso:KICKOFFS[slot], kind:'ko', slot, actualKo}); }
   if(!entries.length) return '';
   entries.sort((x,y)=>(x.iso||'').localeCompare(y.iso||''));
@@ -5140,21 +5151,21 @@ function todaysGamesPanel(parts){
       actResult = done.homeScore>done.awayScore?'h':done.homeScore<done.awayScore?'a':'d';
     } else { const t=e.actualKo[slot]||{}; homeT=t.home||'TBD'; awayT=t.away||'TBD'; mid=`<span style="color:#475569;font-size:0.72rem;">${esc(fmtKickoffTime(e.iso))}</span>`; }
     // The viewer's pick for THIS matchup, oriented to the displayed home/away.
-    const mp=_userKoPickForActual(slot, homeT, awayT);
+    const mp=_userKoPickForActual(reSlot(slot), homeT, awayT, viewerSrc);
     let pickTxt='–', pickCol='#475569';
     if(mp){
       pickTxt=`${mp.hs}–${mp.as}`;
       if(done && done.homeScore!=null){ const c=koCompare({home:homeT,away:awayT,homeScore:mp.hs,awayScore:mp.as,penWinner:mp.pen}, done); pickCol = c.exact?'#4ade80':c.advOk?'#facc15':(c.kind==='nopick'?'#475569':'#f87171'); }
       else pickCol='#94a3b8';
     }
-    const d=_koResultDist(slot, homeT, awayT, parts);   // 3-way: home win · draw(pens) · away win
+    const d=_koResultDist(reSlot(slot), homeT, awayT, parts);   // 3-way: home win · draw(pens) · away win
     const dist=`${seg(d.h,'#60a5fa',actResult==='h')}·${seg(d.d,'#94a3b8',actResult==='d')}·${seg(d.a,'#fb923c',actResult==='a')}`;
     return rowHTML(pickCell(pickTxt,pickCol), homeT, awayT, mid, dist);
   });
 
   return `<div style="background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;padding:0.6rem 1rem 0.4rem;margin-bottom:1.25rem;">
     <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;margin-bottom:0.4rem;display:flex;justify-content:space-between;align-items:baseline;gap:0.5rem;flex-wrap:wrap;">
-      <span>📅 Today's games</span>
+      <span>📅 Today's games${repickMode?' · repick':''}</span>
       <span style="text-transform:none;font-size:0.62rem;color:#475569;">picks: <span style="color:#60a5fa;">left</span>·<span style="color:#94a3b8;">draw</span>·<span style="color:#fb923c;">right</span></span>
     </div>
     ${rows.join('')}
@@ -5500,15 +5511,17 @@ function renderCompare(){
 
   // Sub-tabs: Original (the main game) vs Repick (the KO re-pick game). Default
   // to Repick once the knockouts are under way; sticky once the user clicks.
-  const lbTab = (S.lbTab==='original'||S.lbTab==='repick') ? S.lbTab : (koActive ? 'repick' : 'original');
+  const lbTab = (S.lbTab==='original'||S.lbTab==='repick') ? S.lbTab : (koHasStarted() ? 'repick' : 'original');
   const subTab=(id,icon,label)=>`<button onclick="S.lbTab='${id}';render()" style="flex:1;padding:0.5rem 0.75rem;border:none;border-radius:0.5rem;font-size:0.85rem;font-weight:600;cursor:pointer;background:${lbTab===id?'#16a34a':'transparent'};color:${lbTab===id?'#ffffff':'#94a3b8'};">${icon} ${label}</button>`;
   const tabNav=`<div style="display:flex;gap:0.25rem;background:#0d1f35;border:1px solid rgba(255,255,255,0.07);border-radius:0.6rem;padding:0.25rem;margin-bottom:1.25rem;">
     ${subTab('original','🏆','Original')}${subTab('repick','🔄','Repick')}
   </div>`;
 
-  const repickBody = reLbAll.length>0
+  const repickParts = Object.entries(S.allRePicks||{}).map(([name,picks])=>({name, kPreds:picks}));
+  const repickTodayHTML = todaysGamesPanel(repickParts, true);   // today's KO games, repick picks
+  const repickBody = `${repickTodayHTML}${reLbAll.length>0
     ? `${repickPodiumHTML}${reSectionHTML}`
-    : `<div style="text-align:center;padding:2.5rem;color:#64748b;background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;">🔄 Repicker standings appear once the knockouts begin and players' brackets are scored.</div>`;
+    : `<div style="text-align:center;padding:2.5rem;color:#64748b;background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;">🔄 Repicker standings appear once the knockouts begin and players' brackets are scored.</div>`}`;
 
   return `
     <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1.25rem;flex-wrap:wrap;gap:0.5rem;">
@@ -5519,14 +5532,28 @@ function renderCompare(){
       <span style="font-size:0.75rem;color:#4ade80;padding:0.35rem 0.75rem;">⚡ Live</span>
     </div>
 
-    <div style="background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;padding:1rem;margin-bottom:1.25rem;">
-      <div style="display:flex;justify-content:space-between;font-size:0.75rem;color:#64748b;margin-bottom:0.375rem;">
-        <span>Tournament progress</span><span>${completed.length}/${GROUP_GAMES.length}</span>
-      </div>
-      <div style="height:0.5rem;background:rgba(255,255,255,0.07);border-radius:9999px;overflow:hidden;">
-        <div style="height:100%;background:#16a34a;border-radius:9999px;width:${(completed.length/GROUP_GAMES.length*100).toFixed(1)}%;"></div>
-      </div>
-    </div>
+    ${(()=>{
+      const koTotalGames = Object.keys(KO_VENUES).length;                 // 32 knockout games
+      const koDoneGames  = Object.keys(KO_VENUES).filter(id=>{ const r=S.kResults[id]; return r&&r.homeScore!=null; }).length;
+      const grpTotal = GROUP_GAMES.length;                                 // 72
+      const total = grpTotal + koTotalGames;                              // 104
+      const grpRegion = grpTotal/total*100, koRegion = koTotalGames/total*100;  // bar split by game count
+      const grpFill = completed.length/grpTotal*100;
+      const koFill  = koTotalGames>0 ? koDoneGames/koTotalGames*100 : 0;
+      return `<div style="background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;padding:1rem;margin-bottom:1.25rem;">
+        <div style="display:flex;justify-content:space-between;font-size:0.75rem;color:#64748b;margin-bottom:0.375rem;">
+          <span>Tournament progress</span><span>${completed.length+koDoneGames}/${total} games</span>
+        </div>
+        <div style="display:flex;height:0.5rem;background:rgba(255,255,255,0.07);border-radius:9999px;overflow:hidden;">
+          <div style="width:${grpRegion}%;height:100%;"><div style="height:100%;width:${grpFill}%;background:#16a34a;"></div></div>
+          <div style="width:${koRegion}%;height:100%;border-left:1px solid rgba(255,255,255,0.18);"><div style="height:100%;width:${koFill}%;background:#a78bfa;"></div></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:0.7rem;margin-top:0.375rem;">
+          <span style="color:#16a34a;font-weight:600;">${completed.length}/${grpTotal} group</span>
+          <span style="color:#a78bfa;font-weight:600;">${koDoneGames}/${koTotalGames} KO</span>
+        </div>
+      </div>`;
+    })()}
 
     ${tabNav}
 
