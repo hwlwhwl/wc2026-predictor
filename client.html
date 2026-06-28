@@ -2579,26 +2579,43 @@ function koPts(){
   if(s){ const a=String(s).split(',').map(Number); if(a.length===3 && a.every(x=>Number.isFinite(x)&&x>=0)) return {matchup:a[0], exact:a[1], advancer:a[2]}; }
   return {matchup:0.5, exact:3, advancer:1};
 }
-// Points per correctly-predicted team-in-a-round (default 0 → doesn't affect scores).
+// Points per correctly-predicted team-in-a-round (default 0 → doesn't affect scores)
+// and the round-weight curve applied to those teams (default flat = all ×1).
 function roundTeamWeight(){ const v=parseFloat(S.settings?.round_team_weight); return Number.isFinite(v)&&v>=0 ? v : 0; }
+function roundTeamCurve(){ return KO_ROUND_WEIGHTS[S.settings?.round_team_curve] || KO_ROUND_WEIGHTS.flat; }
 const RT_ROUNDS = ['r32','r16','qf','sf','final'];
-// Distinct teams that actually reached each knockout round (from entered results).
+// The 32 R32 qualifiers (top-2 per group + 8 best thirds) under a standings fn.
+function qualifierR32Set(standFn){
+  const set=new Set(); const thirds=[];
+  for(const g of Object.keys(GROUPS)){
+    const st=standFn(g)||[];
+    if(st[0]) set.add(st[0].name);
+    if(st[1]) set.add(st[1].name);
+    if(st[2]) thirds.push(st[2]);
+  }
+  thirds.sort(cmpThird).slice(0,8).forEach(t=>set.add(t.name));
+  return set;
+}
+// Distinct teams actually in each round. R32 = the live qualifiers from real group
+// results (so it's meaningful before the knockouts start); R16+ from KO results.
 function koActualRoundTeams(){
-  const out={}; RT_ROUNDS.forEach(r=>out[r]=new Set());
+  const out={r32:qualifierR32Set(actualGroupStandings),r16:new Set(),qf:new Set(),sf:new Set(),final:new Set()};
   for(const id of Object.keys(KO_VENUES)){
     const r=S.kResults[id]; if(!r||!r.home||!r.away) continue;
-    const rd=koRoundKey(id); if(out[rd]){ out[rd].add(r.home); out[rd].add(r.away); }
+    const rd=koRoundKey(id); if(rd!=='r32' && out[rd]){ out[rd].add(r.home); out[rd].add(r.away); }
   }
   return out;
 }
-// For one participant's KO bracket: how many of the teams they had in each round
-// actually reached that round (regardless of which game) — a "bracket survival" count.
-function koRoundTeamCounts(kPreds, actualByRound){
+// For one participant: how many of the teams they had in each round actually
+// reached it (any game). R32 = their predicted qualifiers (from group picks);
+// R16+ = the teams in their knockout score picks.
+function koRoundTeamCounts(p, actualByRound){
   const counts={}; RT_ROUNDS.forEach(r=>counts[r]=0); let total=0;
-  const predBy={}; RT_ROUNDS.forEach(r=>predBy[r]=new Set());
-  if(kPreds) for(const [id,p] of Object.entries(kPreds)){
-    if(!p) continue; const rd=koRoundKey(id); if(!predBy[rd]) continue;
-    if(p.home) predBy[rd].add(p.home); if(p.away) predBy[rd].add(p.away);
+  const predBy={r32:qualifierR32Set(g=>predGroupStandings(g, p.gPreds||{})),r16:new Set(),qf:new Set(),sf:new Set(),final:new Set()};
+  const kp=p.kPreds||{};
+  for(const [id,pr] of Object.entries(kp)){
+    if(!pr) continue; const rd=koRoundKey(id); if(rd==='r32'||!predBy[rd]) continue;
+    if(pr.home) predBy[rd].add(pr.home); if(pr.away) predBy[rd].add(pr.away);
   }
   for(const r of RT_ROUNDS){
     let c=0; for(const t of predBy[r]) if(actualByRound[r].has(t)) c++;
@@ -5039,7 +5056,7 @@ function renderCompare(){
   }
 
   const W=getWeights(); const PK=koPts();
-  const actualByRound=koActualRoundTeams(); const RTW=roundTeamWeight();
+  const actualByRound=koActualRoundTeams(); const RTW=roundTeamWeight(); const RTC=roundTeamCurve();
   const lb=allPred.map(p=>{
     let groupTotal=0,exact=0,correct=0,scored=0,bad=0,surprise=0;
     for(const [gid,pr] of Object.entries(p.gPreds)){
@@ -5062,8 +5079,8 @@ function renderCompare(){
       if(resPts>0) surprise += resPts * (koOddsWeight[slot]||1);
     }
     const ko=koScoreFor(p.kPreds);
-    const rt=koRoundTeamCounts(p.kPreds, actualByRound);   // teams that reached each round
-    const roundTeamsPts=+(RTW*rt.total).toFixed(2);        // 0 unless admin sets a weight
+    const rt=koRoundTeamCounts(p, actualByRound);          // teams that reached each round
+    const roundTeamsPts=+(RTW*RT_ROUNDS.reduce((s,r)=>s+rt[r]*(RTC[r]||1),0)).toFixed(2); // 0 unless admin sets a weight
     // Total = the weighted group formula (A×correct + B×exact − C×PAB) + weighted KO
     // + (optional) round-team points. Once any group game is complete, everyone gets
     // a weighted score — including skip penalties — so the table matches the chart.
@@ -5251,7 +5268,7 @@ function renderCompare(){
 
   // ── Teams reaching each round (bracket survival) — appears once KO results exist ──
   const roundTeamsHTML = (()=>{
-    if(!koActive || lb.length===0) return '';
+    if(lb.length===0 || completed.length===0) return '';
     const labels=[['r32','R32'],['r16','R16'],['qf','QF'],['sf','SF'],['final','Final']];
     const rows=[...lb].sort((a,b)=>b.rt.total-a.rt.total||b.total-a.total).map((e,i)=>`
       <tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
@@ -5263,7 +5280,7 @@ function renderCompare(){
       </tr>`).join('');
     return `
       <h2 style="font-size:1.125rem;font-weight:700;color:white;margin:0.5rem 0 0.4rem;">🌳 Teams reaching each round
-        <span style="font-size:0.72rem;color:#64748b;font-weight:400;">— how many of your teams actually got that far, in any game${RTW>0?` · worth ${RTW} pt each toward Total`:''}</span></h2>
+        <span style="font-size:0.72rem;color:#64748b;font-weight:400;">— how many of your teams actually reached that round, in any game${RTW>0?` · counts toward Total`:''}</span></h2>
       <div style="background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;overflow:hidden;margin-bottom:1.25rem;">
         <div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.875rem;">
           <thead><tr style="color:#64748b;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.04em;border-bottom:1px solid rgba(255,255,255,0.08);">
@@ -5614,8 +5631,14 @@ function renderAdmin(){
           Teams-per-round bonus
           <input id="rt-w" type="number" min="0" step="0.5" value="${roundTeamWeight()}" class="score-in" style="width:5rem;text-align:center;" />
         </label>
+        <label style="display:flex;flex-direction:column;gap:0.25rem;font-size:0.8rem;color:#64748b;min-width:13rem;">
+          Round weighting
+          <select onchange="_setSetting('round_team_curve', this.value)" style="font-size:0.85rem;">
+            ${Object.keys(KO_ROUND_WEIGHTS).map(k=>`<option value="${k}"${k===(S.settings?.round_team_curve||'flat')?' selected':''}>${esc(KO_CURVE_LABELS[k]||k)}</option>`).join('')}
+          </select>
+        </label>
         <button class="btn-g" onclick="_setSetting('round_team_weight', document.getElementById('rt-w').value.trim())" style="padding:0.5rem 1rem;font-size:0.875rem;">Save</button>
-        <span style="font-size:0.72rem;color:#475569;flex:1;min-width:12rem;">Points per team of yours that reached a round (any game), added to Total. Default <b>0</b> (off). Shown in the "Teams reaching each round" leaderboard table.</span>
+        <span style="font-size:0.72rem;color:#475569;flex:1;min-width:12rem;">Points = bonus × Σ(your teams reaching each round × that round's weight). Default <b>0</b> (off), no weighting. Shown in the "Teams reaching each round" table.</span>
       </div>
     </div>`; })()}
 
