@@ -1915,6 +1915,14 @@ function reHasPick(picks, id){
   const p = picks && picks[id];
   return !!(p && p.home && p.away && p.homeScore!=null && p.awayScore!=null);
 }
+// Engagement gate: you must pick at least half (8) of the 16 Round-of-32 games
+// to unlock the later rounds and to count on the Repicker leaderboard. Stops
+// low-effort players from swooping in to pick R16+ once the field is known.
+const RE_R32_MIN = 8;
+function reR32PickCount(picks){
+  let n=0; for(let i=1;i<=16;i++){ if(reHasPick(picks,`r32-${i}`)) n++; } return n;
+}
+function reQualified(picks){ return reR32PickCount(picks) >= RE_R32_MIN; }
 
 async function fetchWeatherForVisible(){
   const view=S.view;
@@ -5261,7 +5269,7 @@ function renderCompare(){
 
   // ── Repicker standings (separate game) — appears once KO results exist ──
   const reLbAll = Object.entries(S.allRePicks||{})
-    .filter(([name,picks])=> rePickComplete(picks)) // only players who picked the whole bracket
+    .filter(([name,picks])=> reQualified(picks) && rePickComplete(picks)) // ≥half R32 + complete bracket
     .map(([name,picks])=>({ name, ...koScoreForRepicker(picks) }))
     .sort((a,b)=>b.koTotal-a.koTotal||b.matchups-a.matchups||a.name.localeCompare(b.name));
   const reSectionHTML = (()=>{
@@ -7352,11 +7360,25 @@ function renderRepicker(){
   const tab = S.rePickTab||'r32';
   const round = rounds.find(r=>r.key===tab)||rounds[0];
 
+  // Engagement gate: until you've made ≥half (8) of your R32 picks, the later
+  // rounds stay locked for you (and you don't count on the leaderboard).
+  const myR32Count = reR32PickCount(S.rePicks);
+  const qualified  = myR32Count >= RE_R32_MIN;
+  const roundLocked = round.key!=='r32' && !qualified;   // later rounds need the R32 gate
+
   const tabsHtml = rounds.map(r=>{
     const allDone = r.ids.every(reHasScore);
+    const gated = r.key!=='r32' && !qualified;
     const cls = r.key===tab ? 'rnd-tab on' : (allDone ? 'rnd-tab done' : 'rnd-tab');
-    return `<button class="${cls}" onclick="S.rePickTab='${r.key}';render()">${allDone&&r.key!==tab?'✓ ':''} ${r.label}</button>`;
+    return `<button class="${cls}" onclick="S.rePickTab='${r.key}';render()">${gated?'🔒 ':(allDone&&r.key!==tab?'✓ ':'')}${r.label}</button>`;
   }).join('');
+
+  // Banner shown on a locked later-round tab telling the player how to unlock it.
+  const gateBanner = roundLocked ? `
+    <div style="background:#2a1530;border:1px solid rgba(248,113,113,0.3);border-radius:0.75rem;padding:0.85rem 1rem;margin-bottom:0.75rem;text-align:center;">
+      <div style="color:#f87171;font-weight:700;font-size:0.9rem;">🔒 Later rounds are locked</div>
+      <div style="color:#cbd5e1;font-size:0.78rem;margin-top:0.3rem;">Pick at least <b>${RE_R32_MIN} of your 16 Round-of-32 games</b> to unlock R16 onward. You've made <b>${myR32Count}</b>.</div>
+    </div>` : '';
 
   const koDate = {}; koVenueDates().forEach(({id,date})=>{ koDate[id]=date; });
   // Order games within the round by kickoff date/time (then by match number).
@@ -7372,7 +7394,7 @@ function renderRepicker(){
     const candsAway = awayKnown ? [] : reSideCandidates(id,'away',userBracket);
     const date = koDate[id];
     const started = reGameStarted(id);            // kicked off → locks individually
-    const gLocked = locked || started;            // editable only before kickoff
+    const gLocked = locked || started || roundLocked; // also locked if R32 gate unmet
 
     // Game kicked off and the player never picked it → random, always-wrong
     // outcome and a −5 penalty. Show a locked card explaining the miss.
@@ -7491,7 +7513,7 @@ function renderRepicker(){
   // Leaderboard
   const allRP = S.allRePicks||{};
   const scored = Object.entries(allRP)
-    .filter(([name,picks])=> rePickComplete(picks)) // only players with a complete bracket
+    .filter(([name,picks])=> reQualified(picks) && rePickComplete(picks)) // ≥half R32 + complete bracket
     .map(([name,picks])=>({ name, ...koScoreForRepicker(picks) }))
     .sort((a,b)=>b.koTotal-a.koTotal||b.matchups-a.matchups||a.name.localeCompare(b.name));
   const lbRows = scored.map((s,i)=>{
@@ -7513,7 +7535,7 @@ function renderRepicker(){
   <div style="padding-bottom:1.5rem;">
     <div onclick="showRepickerInfo()" class="purple-banner" style="cursor:pointer;background:linear-gradient(90deg,#7c3aed,#6d28d9);border-radius:0.75rem;padding:0.85rem 1rem;margin-bottom:1rem;box-shadow:0 2px 10px rgba(124,58,237,0.3);">
       <h1 style="font-size:1.25rem;font-weight:700;margin:0;">🔄 Repicker Bracket</h1>
-      <p style="font-size:0.8rem;margin:0.3rem 0 0;line-height:1.45;opacity:0.92;">Re-pick the knockout bracket from the real draw — predict the <b>score</b> of each game, starting from the actual Round-of-32 teams. Start now with any settled matchup and come back as more places are confirmed. <b>Each game locks at its own kickoff</b> — any game you haven't picked by then gets a random outcome, scored as a loss (−${RE_MISS_PENALTY}). <span style="text-decoration:underline;">How it works →</span></p>
+      <p style="font-size:0.8rem;margin:0.3rem 0 0;line-height:1.45;opacity:0.92;">Re-pick the knockout bracket from the real draw — predict the <b>score</b> of each game, starting from the actual Round-of-32 teams. Start now with any settled matchup and come back as more places are confirmed. <b>Each game locks at its own kickoff</b> — any game you haven't picked by then gets a random outcome, scored as a loss (−${RE_MISS_PENALTY}). Pick at least <b>${RE_R32_MIN} of 16 R32 games</b> to unlock the later rounds; the whole bracket locks once all R32 games are played. <span style="text-decoration:underline;">How it works →</span></p>
     </div>
     ${adminStatus}
 
@@ -7526,6 +7548,7 @@ function renderRepicker(){
 
     <div style="display:flex;gap:0.25rem;overflow-x:auto;padding-bottom:0.375rem;margin-bottom:1rem;">${tabsHtml}</div>
 
+    ${gateBanner}
     ${matchesHtml}
 
     ${scored.length ? `
@@ -7611,6 +7634,7 @@ function reBotNextGame(){
   const ub = repickerUserBracket(S.rePicks);
   const rounds=[['r32',16],['r16',8],['qf',4],['sf',2],['final',1]];
   for(const [key,n] of rounds){
+    if(key!=='r32' && !reQualified(S.rePicks)) break;                     // need ≥half R32 first
     for(let i=1;i<=n;i++){
       const id = key==='final'?'final-1':`${key}-${i}`;
       const t=ub[id]; if(!t) continue;

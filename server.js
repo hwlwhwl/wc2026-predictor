@@ -469,17 +469,19 @@ async function buildStatePayload() {
 
   // Auto-compute whether Repicker is open.
   // The Repicker no longer slams shut at the first R32 kickoff — it stays open
-  // through the weekend so players can still fill the rest of the bracket. Each
-  // game instead locks individually at its own kickoff (client-side), and a game
-  // a player hasn't picked by then gets a random, always-wrong outcome and −5.
-  // A single hard cutoff (default the Monday after the first R32 game) closes the
-  // whole Repicker; admin can override via the `repicker_close_date` setting.
+  // while the Round of 32 is being played so players can still fill the rest of
+  // the bracket. Each game locks individually at its own kickoff (client-side),
+  // and a game a player hasn't picked by then gets a random, always-wrong outcome
+  // and −5. The WHOLE Repicker hard-locks once every R32 game has been played
+  // (so nobody picks the later rounds after the R32 field is fully known).
+  // An optional `repicker_close_date` is an extra admin backstop.
   const gResultCount = Object.keys(gResults).length;
-  const closeDate    = settings.repicker_close_date || '2026-06-29'; // Monday after the Sun R32 opener
+  const r32Done      = Object.keys(kResults).filter(id => id.startsWith('r32-')).length >= 16;
+  const closeDate    = settings.repicker_close_date || '';            // optional admin hard cutoff
   const today        = new Date().toISOString().slice(0, 10);
-  const pastClose    = today >= closeDate;
-  const autoOpen     = gResultCount >= 72 && !pastClose;
-  const adminOpen    = settings.repicker_admin_open === 'true' && !pastClose;
+  const pastClose    = !!closeDate && today >= closeDate;
+  const autoOpen     = gResultCount >= 72 && !r32Done && !pastClose;
+  const adminOpen    = settings.repicker_admin_open === 'true' && !r32Done && !pastClose;
   const forceClosed  = settings.repicker_force_closed === 'true';
   settings.repicker_open = (!forceClosed && (autoOpen || adminOpen)) ? 'true' : 'false';
   settings.repicker_auto = autoOpen ? 'true' : 'false';
