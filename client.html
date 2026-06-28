@@ -4565,27 +4565,18 @@ function renderKoCard(game, round){
   const isThird=game.isThird;
   const roundLabel = isThird?'3rd place':round.toUpperCase();
 
-  // Sync actual team names into kPreds.
-  // When the matchup changes, stale score/pen data causes false "unresolved tie"
-  // indicators: e.g. a 1–1 prediction entered for France vs Spain shows as an
-  // unresolved tie once Morocco replaces France, because penWinner='France' no
-  // longer matches either team and the scores are still equal.
-  // Fix: always clear penalty data when teams change (pens are team-specific),
-  // and clear scores too if neither previous team is still in the slot.
+  // Keep the stored team names aligned with the (now predictions-only, stable)
+  // bracket, but NEVER discard a locked scoreline. Earlier this wiped scores when
+  // both teams in a slot changed — which, combined with the bracket drifting from
+  // the predicted draw to the actual one, silently mutated locked KO picks. Now
+  // we only update the team labels and keep the penalty winner if it still names
+  // one of the teams; the predicted bracket is fixed, so this fires at most once.
   if(kp.home!==game.home||kp.away!==game.away){
-    const prevTeams = new Set([kp.home, kp.away].filter(Boolean));
-    const anyCarryover = game.home && prevTeams.has(game.home) ||
-                         game.away && prevTeams.has(game.away);
-    if(anyCarryover){
-      // One team stayed — keep scores, just wipe penalty data (must re-pick pen winner)
-      S.kPreds[game.id]={...kp,home:game.home,away:game.away,
-        penWinner:'',penHome:undefined,penAway:undefined};
-    } else {
-      // Completely new matchup — wipe everything so no ghost tie appears
-      S.kPreds[game.id]={home:game.home,away:game.away,
-        homeScore:undefined,awayScore:undefined,
-        penWinner:'',penHome:undefined,penAway:undefined};
-    }
+    const penOk = kp.penWinner && (kp.penWinner===game.home || kp.penWinner===game.away);
+    S.kPreds[game.id]={...kp, home:game.home, away:game.away,
+      penWinner: penOk ? kp.penWinner : '',
+      penHome:   penOk ? kp.penHome : undefined,
+      penAway:   penOk ? kp.penAway : undefined};
     persist();
   }
 
