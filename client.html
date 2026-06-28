@@ -2161,11 +2161,16 @@ function _rankGroup(teams, g, getScore){
 
 // Bracket-feeding standings: prefer actual results over predictions per game,
 // so the KO bracket auto-resolves as real results come in.
+// When true, the bracket pipeline (standings → qualifiers → winners) ignores
+// real results and uses ONLY the viewer's own predictions — so the Predict tab
+// shows the bracket the person predicted, not how it actually played out.
+let _predBracketOnly = false;
 function effectiveGroupStandings(g){
   const teams = GROUPS[g].map(name=>({name,pts:0,gf:0,ga:0,gd:0,w:0,d:0,l:0}));
   const idx = t => teams.findIndex(x=>x.name===t);
+  const scoreFor = id => _predBracketOnly ? S.gPreds[id] : (S.gResults[id] || S.gPreds[id]);
   for(const game of GROUP_GAMES.filter(x=>x.g===g)){
-    const p = S.gResults[game.id] || S.gPreds[game.id];
+    const p = scoreFor(game.id);
     if(!p) continue;
     const [h,a] = p;
     const hi=idx(game.home), ai=idx(game.away);
@@ -2176,7 +2181,7 @@ function effectiveGroupStandings(g){
     else if(h===a){ teams[hi].pts+=1; teams[hi].d++; teams[ai].pts+=1; teams[ai].d++; }
     else { teams[ai].pts+=3; teams[ai].w++; teams[hi].l++; }
   }
-  return _rankGroup(teams, g, id => S.gResults[id] || S.gPreds[id]);
+  return _rankGroup(teams, g, scoreFor);
 }
 
 function actualGroupStandings(g){
@@ -2535,7 +2540,7 @@ function koLoserFrom(matchId){
 // cached on the kPreds entry — which can be missing after imports or when
 // the user navigates straight to a later round.
 function winnerOf(matchId, home, away){
-  const kr = S.kResults && S.kResults[matchId];
+  const kr = !_predBracketOnly && S.kResults && S.kResults[matchId];
   if(kr && kr.homeScore!==undefined){
     if(kr.homeScore > kr.awayScore) return home;
     if(kr.awayScore > kr.homeScore) return away;
@@ -4510,7 +4515,12 @@ function renderTiebreakerUI(q){
 // ── Knockout section ─────────────────────────────────────
 function renderKoSection(round){
   // Build the full bracket pipeline once; each round depends on all prior rounds.
-  const { q, r16, qf, sf, fin } = buildAllRounds();
+  // Predictions-only: the Predict tab shows the bracket the PERSON predicted
+  // (from their group + KO picks), not how it actually played out.
+  _predBracketOnly = true;
+  let q, r16, qf, sf, fin;
+  try { ({ q, r16, qf, sf, fin } = buildAllRounds()); }
+  finally { _predBracketOnly = false; }
   let games=[];
   if(round==='r32'){
     games = R32_FIXED.map(m=>({
