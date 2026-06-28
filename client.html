@@ -2596,6 +2596,25 @@ function qualifierR32Set(standFn){
   thirds.sort(cmpThird).slice(0,8).forEach(t=>set.add(t.name));
   return set;
 }
+// A player's PREDICTED R32 qualifiers — only from groups they actually finished
+// predicting (so a no-pick player predicts nobody, not a fabricated chalk bracket).
+// Top-2 come from each fully-predicted group; best-8 thirds only when they've
+// predicted the entire group stage (otherwise the cut isn't determinable).
+function predictedR32Set(p){
+  const gp = p.gPreds||{};
+  const set=new Set(); const thirds=[]; let allGroupsFull=true;
+  for(const g of Object.keys(GROUPS)){
+    const games=GROUP_GAMES.filter(x=>x.g===g);
+    const full = games.length>0 && games.every(x=>gp[x.id]);
+    if(!full){ allGroupsFull=false; continue; }
+    const st=predGroupStandings(g, gp);
+    if(st[0]) set.add(st[0].name);
+    if(st[1]) set.add(st[1].name);
+    if(st[2]) thirds.push(st[2]);
+  }
+  if(allGroupsFull) thirds.sort(cmpThird).slice(0,8).forEach(t=>set.add(t.name));
+  return set;
+}
 // Distinct teams actually in each round. R32 = the live qualifiers from real group
 // results (so it's meaningful before the knockouts start); R16+ from KO results.
 function koActualRoundTeams(){
@@ -2611,7 +2630,7 @@ function koActualRoundTeams(){
 // R16+ = the teams in their knockout score picks.
 function koRoundTeamCounts(p, actualByRound){
   const counts={}; RT_ROUNDS.forEach(r=>counts[r]=0); let total=0;
-  const predBy={r32:qualifierR32Set(g=>predGroupStandings(g, p.gPreds||{})),r16:new Set(),qf:new Set(),sf:new Set(),final:new Set()};
+  const predBy={r32:predictedR32Set(p),r16:new Set(),qf:new Set(),sf:new Set(),final:new Set()};
   const kp=p.kPreds||{};
   for(const [id,pr] of Object.entries(kp)){
     if(!pr) continue; const rd=koRoundKey(id); if(rd==='r32'||!predBy[rd]) continue;
