@@ -2698,15 +2698,21 @@ function koRoundTeamCounts(p, actualByRound){
   }
   counts.total=total; return counts;
 }
-// Exact-score knockout matchups a participant predicted, per round (both teams
-// right AND the exact scoreline, incl. pen winner on draws). Used to annotate
-// the "teams reaching each round" table.
-function koExactByRound(kPreds){
+// Knockout matchups a participant called right, per round: games where they
+// predicted BOTH teams in the matchup (regardless of score). Counts as soon as
+// the actual pairing is known (R32 once groups finish; later rounds as results
+// come in). `actualTeams` is {slot:{home,away}} from _actualKoTeams + results.
+function koMatchupByRound(kPreds, actualTeams){
   const out={r32:0,r16:0,qf:0,sf:0,final:0,total:0};
+  if(!kPreds) return out;
   for(const id of Object.keys(KO_VENUES)){
-    const actual=S.kResults[id]; if(!actual||!actual.home||!actual.away||actual.homeScore==null) continue;
-    const c=koCompare(kPreds?kPreds[id]:undefined, actual);
-    if(c.kind==='full' && c.exact){ const rk=koRoundKey(id); if(out[rk]!=null){ out[rk]++; out.total++; } }
+    if(id==='3rd') continue;
+    const at=actualTeams&&actualTeams[id];
+    if(!at||!at.home||!at.away) continue;                 // matchup not set yet
+    const pr=kPreds[id];
+    if(!pr||!pr.home||!pr.away||pr.home===pr.away) continue;
+    const actualSet=new Set([at.home, at.away]);
+    if(actualSet.has(pr.home) && actualSet.has(pr.away)){ const rk=koRoundKey(id); if(out[rk]!=null){ out[rk]++; out.total++; } }
   }
   return out;
 }
@@ -5209,6 +5215,11 @@ function renderCompare(){
 
   const W=getWeights(); const PK=koPts();
   const actualByRound=koActualRoundTeams(); const RTW=roundTeamWeight(); const RTC=roundTeamCurve();
+  // Actual matchup teams per KO slot (resolved bracket + any real results), computed
+  // once for the "matchups called right" counts in the round-survival table.
+  let actualKoTeams={};
+  try{ actualKoTeams=_actualKoTeams(); }catch(e){ actualKoTeams={}; }
+  for(const id of Object.keys(KO_VENUES)){ const r=S.kResults[id]; if(r&&r.home&&r.away) actualKoTeams[id]={home:r.home,away:r.away}; }
   const lb=allPred.map(p=>{
     let groupTotal=0,exact=0,correct=0,scored=0,bad=0,surprise=0;
     for(const [gid,pr] of Object.entries(p.gPreds)){
@@ -5239,7 +5250,7 @@ function renderCompare(){
     const weighted=completed.length>0?+(W.a*correct+W.b*exact-W.c*bad).toFixed(2):null;
     const total=+(((weighted ?? 0)+ko.koTotal+roundTeamsPts)).toFixed(2);
     return {name:p.name,total,groupTotal,koTotal:ko.koTotal,matchups:ko.matchups,rt,roundTeamsPts,
-            koExactRound:koExactByRound(p.kPreds),
+            koMatchupRound:koMatchupByRound(p.kPreds, actualKoTeams),
             exact,correct,scored,bad,weighted,surprise:+surprise.toFixed(1),predCount:Object.keys(p.gPreds).length};
   }).sort((a,b)=>{
     const key=S.lbSort, dir=S.lbSortDir;
@@ -5431,13 +5442,13 @@ function renderCompare(){
       <tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
         <td style="padding:0.55rem 1rem;">${i+1}</td>
         <td style="padding:0.55rem 1rem;color:white;font-weight:500;white-space:nowrap;">${esc(e.name)}</td>
-        ${labels.map(([k])=>`<td style="padding:0.55rem 1rem;text-align:right;color:#cbd5e1;">${e.rt[k]} <span style="color:#4ade80;font-size:0.76rem;" title="exact-score matchups">(${e.koExactRound?.[k]||0})</span></td>`).join('')}
-        <td style="padding:0.55rem 1rem;text-align:right;font-weight:700;color:#22d3ee;">${e.rt.total} <span style="color:#4ade80;font-size:0.76rem;font-weight:600;" title="exact-score matchups">(${e.koExactRound?.total||0})</span></td>
+        ${labels.map(([k])=>`<td style="padding:0.55rem 1rem;text-align:right;color:#cbd5e1;">${e.rt[k]} <span style="color:#4ade80;font-size:0.76rem;" title="matchups where you had both teams right">(${e.koMatchupRound?.[k]||0})</span></td>`).join('')}
+        <td style="padding:0.55rem 1rem;text-align:right;font-weight:700;color:#22d3ee;">${e.rt.total} <span style="color:#4ade80;font-size:0.76rem;font-weight:600;" title="matchups where you had both teams right">(${e.koMatchupRound?.total||0})</span></td>
         ${RTW>0?`<td style="padding:0.55rem 1rem;text-align:right;color:#fcd34d;font-weight:600;">${e.roundTeamsPts}</td>`:''}
       </tr>`).join('');
     return `
       <h2 style="font-size:1.125rem;font-weight:700;color:white;margin:0.5rem 0 0.4rem;">🌳 Teams reaching each round
-        <span style="font-size:0.72rem;color:#64748b;font-weight:400;">— teams that reached that round · <span style="color:#4ade80;">(exact-score matchups)</span>${RTW>0?` · teams count toward Total`:''}</span></h2>
+        <span style="font-size:0.72rem;color:#64748b;font-weight:400;">— teams that reached that round · <span style="color:#4ade80;">(matchups with both teams right)</span>${RTW>0?` · teams count toward Total`:''}</span></h2>
       <div style="background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;overflow:hidden;margin-bottom:1.25rem;">
         <div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.875rem;">
           <thead><tr style="color:#64748b;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.04em;border-bottom:1px solid rgba(255,255,255,0.08);">
