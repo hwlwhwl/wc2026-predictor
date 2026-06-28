@@ -4030,12 +4030,15 @@ function scheduleRender(){
 }
 
 function renderMain(){
-  if(S.view==='predict')  return S.name ? renderPredict() : renderNamePrompt();
   if(S.view==='groups')   return renderPicksTab();
   if(S.view==='results')  return renderResults();
   if(S.view==='compare')  return renderCompare();
   if(S.view==='repicker') return renderRepicker();
-  return renderAdmin();
+  // Admin is only rendered for admins. Non-admins (e.g. someone who set the view
+  // by hand) fall through to Predict. The real enforcement is server-side —
+  // every admin endpoint requires an admin session — this just hides the UI.
+  if(S.view==='admin' && _isAdmin) return renderAdmin();
+  return S.name ? renderPredict() : renderNamePrompt();
 }
 
 function cameraModalHtml(){
