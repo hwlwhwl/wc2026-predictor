@@ -467,11 +467,19 @@ async function buildStatePayload() {
   const settings = {};
   for (const r of settingRows) settings[r.key] = r.value;
 
-  // Auto-compute whether Repicker is open
+  // Auto-compute whether Repicker is open.
+  // The Repicker no longer slams shut at the first R32 kickoff — it stays open
+  // through the weekend so players can still fill the rest of the bracket. Each
+  // game instead locks individually at its own kickoff (client-side), and a game
+  // a player hasn't picked by then gets a random, always-wrong outcome and −5.
+  // A single hard cutoff (default the Monday after the first R32 game) closes the
+  // whole Repicker; admin can override via the `repicker_close_date` setting.
   const gResultCount = Object.keys(gResults).length;
-  const hasR32Result = Object.keys(kResults).some(id => id.startsWith('r32-'));
-  const autoOpen     = gResultCount >= 72 && !hasR32Result;
-  const adminOpen    = settings.repicker_admin_open === 'true' && !hasR32Result;
+  const closeDate    = settings.repicker_close_date || '2026-06-29'; // Monday after the Sun R32 opener
+  const today        = new Date().toISOString().slice(0, 10);
+  const pastClose    = today >= closeDate;
+  const autoOpen     = gResultCount >= 72 && !pastClose;
+  const adminOpen    = settings.repicker_admin_open === 'true' && !pastClose;
   const forceClosed  = settings.repicker_force_closed === 'true';
   settings.repicker_open = (!forceClosed && (autoOpen || adminOpen)) ? 'true' : 'false';
   settings.repicker_auto = autoOpen ? 'true' : 'false';

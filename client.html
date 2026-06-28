@@ -212,6 +212,7 @@
   body[data-theme="light"] [style*="background:#0a1628"] { background:#f1f5f9 !important; }
   body[data-theme="light"] [style*="background:#112a45"] { background:#ffffff !important; box-shadow:0 1px 2px rgba(0,0,0,0.04); }
   body[data-theme="light"] [style*="background:#0d1f35"] { background:#f8fafc !important; }
+  body[data-theme="light"] [style*="background:#2a1530"] { background:#fef2f2 !important; }
   body[data-theme="light"] [style*="background:#0d2137"] { background:#ffffff !important; }
   body[data-theme="light"] [style*="background:#1e3a5f"] { background:#e0f2fe !important; }
   body[data-theme="light"] [style*="background:rgba(0,0,0,0.2)"]  { background:rgba(0,0,0,0.04) !important; }
@@ -1880,6 +1881,41 @@ function koVenueDates(){
   return out;
 }
 
+// ── Repicker per-game kickoff locking ───────────────────────────
+// The Repicker stays open through the weekend (see server: repicker_open), but
+// each game locks individually once it kicks off. A player who hasn't picked a
+// game by its kickoff gets a random, always-wrong outcome and a −5 penalty.
+const RE_MISS_PENALTY = 5;            // points deducted per kicked-off, un-picked game
+function _todayISO(){
+  const d=new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+// Kickoff date ('YYYY-MM-DD') for a repicker slot id (accepts 'final' or 'final-1').
+let _koDateMap=null;
+function koDateFor(id){
+  if(!_koDateMap || !_koDateMap.__full){
+    const m={__full:false}; let n=0;
+    koVenueDates().forEach(({id,date})=>{ m[id]=date; n++; });
+    if(m['final']) m['final-1']=m['final'];
+    m.__full = n>16;                 // r16+ resolved too → safe to cache
+    _koDateMap=m;
+  }
+  return _koDateMap[id==='final'?'final-1':id];
+}
+// True once a repicker game has kicked off: an actual result exists, or its
+// calendar day has arrived. Such games lock and can no longer be picked.
+function reGameStarted(id){
+  const aid = id==='final-1' ? 'final' : id;
+  const ar = S.kResults && S.kResults[aid];
+  if(ar && ar.home && ar.homeScore!=null) return true;
+  const d = koDateFor(id);
+  return d ? _todayISO() >= d : false;
+}
+function reHasPick(picks, id){
+  const p = picks && picks[id];
+  return !!(p && p.home && p.away && p.homeScore!=null && p.awayScore!=null);
+}
+
 async function fetchWeatherForVisible(){
   const view=S.view;
   // Collect uncached (venue, date) pairs
@@ -2683,11 +2719,15 @@ const RE_SLOT_IDS = [
   ...Array.from({length:4}, (_,i)=>`qf-${i+1}`),
   'sf-1','sf-2','final-1',
 ];
-// True only if every one of the 31 KO slots has a decided score. Players with an
-// incomplete Repicker bracket are excluded from the Repicker leaderboard.
+// A Repicker entry counts for the leaderboard if the player made at least one
+// pick and every slot is either picked or already kicked off (a kicked-off slot
+// the player never picked is "filled" by a random, always-wrong outcome and is
+// penalised in scoring). Players who never touched the Repicker are excluded.
 function rePickComplete(picks){
   if(!picks) return false;
-  return RE_SLOT_IDS.every(id=>{ const p=picks[id]; return p && p.homeScore!=null && p.awayScore!=null; });
+  const anyPick = RE_SLOT_IDS.some(id=>reHasPick(picks,id));
+  if(!anyPick) return false;
+  return RE_SLOT_IDS.every(id=>reHasPick(picks,id) || reGameStarted(id));
 }
 
 // Same scoring engine for the Repicker (separate game). Maps the repicker's
@@ -2696,10 +2736,16 @@ function koScoreForRepicker(rePicks){
   const w = reWeights(); const P = koPts();
   const ids = RE_SLOT_IDS;
   const rk = id => id.startsWith('r32')?'r32':id.startsWith('r16')?'r16':id.startsWith('qf')?'qf':id.startsWith('sf')?'sf':'final';
-  let koTotal=0, matchups=0, exacts=0, advancers=0, scored=0;
+  let koTotal=0, matchups=0, exacts=0, advancers=0, scored=0, penalties=0;
   for(const id of ids){
     const actual = S.kResults[id==='final-1'?'final':id];
     if(!actual || !actual.home || !actual.away || actual.homeScore==null) continue;
+    // Missed-deadline penalty: the game kicked off and the player never picked
+    // it → random outcome that always scores as a loss, minus RE_MISS_PENALTY.
+    if(!reHasPick(rePicks, id)){
+      koTotal -= RE_MISS_PENALTY; penalties++;
+      continue;
+    }
     const c = koCompare(rePicks ? rePicks[id] : undefined, actual);
     let teams=0, resultPts=0;
     if(c.kind==='half'){ teams=1; if(c.halfAdv){ resultPts=P.advancer; advancers++; } }
@@ -2709,7 +2755,7 @@ function koScoreForRepicker(rePicks){
     const mp=P.matchup*teams; matchups += mp;
     koTotal += (mp+resultPts) * (w[rk(id)] || 1);
   }
-  return { koTotal:+koTotal.toFixed(2), matchups:+matchups.toFixed(1), exacts, advancers, scored };
+  return { koTotal:+koTotal.toFixed(2), matchups:+matchups.toFixed(1), exacts, advancers, scored, penalties };
 }
 
 // Build Round of 16 matchups from R32 winners
@@ -5263,6 +5309,7 @@ function renderCompare(){
         <td style="padding:0.6rem 1rem;text-align:right;font-weight:700;color:#a78bfa;">${e.koTotal}</td>
         <td style="padding:0.6rem 1rem;text-align:right;color:#22d3ee;">${e.matchups}</td>
         <td style="padding:0.6rem 1rem;text-align:right;color:#4ade80;">${e.exacts}</td>
+        <td style="padding:0.6rem 1rem;text-align:right;color:${e.penalties?'#f87171':'#475569'};">${e.penalties?`−${e.penalties*RE_MISS_PENALTY}`:'—'}</td>
       </tr>`).join('');
     return `
       <h2 style="font-size:1.125rem;font-weight:700;color:white;margin:0.5rem 0 0.75rem;">🔄 Repicker leaderboard
@@ -5279,6 +5326,7 @@ function renderCompare(){
             <th style="padding:0.6rem 1rem;text-align:right;">KO pts</th>
             <th style="padding:0.6rem 1rem;text-align:right;">Match</th>
             <th style="padding:0.6rem 1rem;text-align:right;">Exact</th>
+            <th style="padding:0.6rem 1rem;text-align:right;" title="Penalty for games not picked before kickoff">Miss</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table></div>
@@ -7311,13 +7359,42 @@ function renderRepicker(){
   }).join('');
 
   const koDate = {}; koVenueDates().forEach(({id,date})=>{ koDate[id]=date; });
-  const matchesHtml = round.ids.map(id=>{
+  // Order games within the round by kickoff date/time (then by match number).
+  const orderedIds = round.ids.slice().sort((a,b)=>{
+    const da=koDate[a]||'9999-12-31', db=koDate[b]||'9999-12-31';
+    return da<db?-1:da>db?1:a.localeCompare(b,undefined,{numeric:true});
+  });
+  const matchesHtml = orderedIds.map(id=>{
     const t = userBracket[id]||{};
     const home=t.home, away=t.away;
     const homeKnown=repickerTeamKnown(home), awayKnown=repickerTeamKnown(away);
     const candsHome = homeKnown ? [] : reSideCandidates(id,'home',userBracket);
     const candsAway = awayKnown ? [] : reSideCandidates(id,'away',userBracket);
     const date = koDate[id];
+    const started = reGameStarted(id);            // kicked off → locks individually
+    const gLocked = locked || started;            // editable only before kickoff
+
+    // Game kicked off and the player never picked it → random, always-wrong
+    // outcome and a −5 penalty. Show a locked card explaining the miss.
+    if(started && !reHasPick(S.rePicks,id) && (homeKnown || awayKnown)){
+      const ar2 = S.kResults[reActualId(id)];
+      const actualLine = (ar2 && ar2.home && ar2.homeScore!=null)
+        ? `Actual: ${esc(shortTeamName(ar2.home))} ${ar2.homeScore}–${ar2.awayScore} ${esc(shortTeamName(ar2.away))}${(ar2.homeScore===ar2.awayScore&&ar2.penWinner)?` · pens ${esc(shortTeamName(ar2.penWinner))}`:''}`
+        : 'kicked off';
+      const sideTxt=(side,team,known,align)=> known
+        ? `<div style="flex:1;text-align:${align};font-size:0.85rem;color:#94a3b8;">${esc(shortTeamName(team))}</div>`
+        : `<div style="flex:1;text-align:${align};font-size:0.78rem;color:#64748b;font-weight:600;">${esc(reSideLabel(id,side))}</div>`;
+      return `<div style="background:#2a1530;border:1px solid rgba(248,113,113,0.25);border-radius:0.75rem;padding:0.75rem;margin-bottom:0.5rem;">
+        ${reCardMeta(id,date, homeKnown?home:null, awayKnown?away:null)}
+        <div style="display:flex;align-items:center;gap:0.6rem;">
+          ${sideTxt('home',home,homeKnown,'right')}
+          <span style="color:#475569;font-weight:700;">🔒</span>
+          ${sideTxt('away',away,awayKnown,'left')}
+        </div>
+        <div style="color:#f87171;font-size:0.7rem;margin-top:0.45rem;text-align:center;font-weight:600;">⚠️ Not picked before kickoff — random outcome, scored as a loss (−${RE_MISS_PENALTY})</div>
+        <div style="color:#64748b;font-size:0.66rem;margin-top:0.3rem;text-align:center;">${actualLine}</div>
+      </div>`;
+    }
 
     // A game is pickable as soon as at least one side is a settled, known team.
     // With neither side settled, it stays locked — but still preview the possible
@@ -7353,9 +7430,9 @@ function renderRepicker(){
         (awayKnown && repickerTeamKnown(rp.away) && rp.away!==away);
       if(disruptive){
         S.rePicks[id] = {home,away,homeScore:undefined,awayScore:undefined,penWinner:'',penHome:undefined,penAway:undefined};
-        rp = S.rePicks[id]; if(!locked) persistRe();
+        rp = S.rePicks[id]; if(!gLocked) persistRe();
       } else if(rp.home!==home || rp.away!==away){
-        rp.home=home; rp.away=away; if(!locked) persistRe();   // placeholder resolved — keep score
+        rp.home=home; rp.away=away; if(!gLocked) persistRe();   // placeholder resolved — keep score
       }
     }
 
@@ -7376,9 +7453,9 @@ function renderRepicker(){
         <div style="font-size:0.72rem;color:#fbbf24;margin-bottom:0.4rem;text-align:center;">🎯 Penalty shootout — goals scored</div>
         <div style="display:flex;align-items:center;gap:0.6rem;justify-content:center;">
           <div style="flex:1;text-align:right;font-size:0.78rem;color:#94a3b8;">${teamSpan(home)}</div>
-          ${reScoreCell(id,'h',penH,locked,true)}
+          ${reScoreCell(id,'h',penH,gLocked,true)}
           <span style="color:#334155;font-weight:700;">–</span>
-          ${reScoreCell(id,'a',penA,locked,true)}
+          ${reScoreCell(id,'a',penA,gLocked,true)}
           <div style="flex:1;text-align:left;font-size:0.78rem;color:#94a3b8;">${teamSpan(away,true)}</div>
         </div>
       </div>` : '';
@@ -7397,9 +7474,9 @@ function renderRepicker(){
         <div class="card-pred">
           <div style="display:flex;align-items:center;gap:0.6rem;">
             <div style="flex:1;text-align:right;font-size:0.85rem;font-weight:500;">${sideName('home',home,homeKnown,candsHome,'right')}</div>
-            ${reScoreCell(id,'h',hv,locked,false)}
+            ${reScoreCell(id,'h',hv,gLocked,false)}
             <span style="color:#334155;font-weight:700;">–</span>
-            ${reScoreCell(id,'a',av,locked,false)}
+            ${reScoreCell(id,'a',av,gLocked,false)}
             <div style="flex:1;text-align:left;font-size:0.85rem;font-weight:500;">${sideName('away',away,awayKnown,candsAway,'left')}</div>
           </div>
           ${penSection}
@@ -7423,6 +7500,7 @@ function renderRepicker(){
       <span style="color:#475569;font-size:0.75rem;width:1.5rem;text-align:center;">#${i+1}</span>
       <span style="flex:1;font-size:0.875rem;color:${isSelf?'#4ade80':'#cbd5e1'};font-weight:${isSelf?600:400};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(s.name)}${isSelf?' (you)':''}</span>
       <span style="font-size:0.72rem;color:#22d3ee;white-space:nowrap;" title="Matchups called right">${s.matchups} mt</span>
+      ${s.penalties?`<span style="font-size:0.72rem;color:#f87171;white-space:nowrap;" title="Games not picked before kickoff (−${RE_MISS_PENALTY} each)">−${s.penalties*RE_MISS_PENALTY}</span>`:''}
       <span style="font-size:0.82rem;color:#fcd34d;font-weight:700;font-family:monospace;white-space:nowrap;min-width:3rem;text-align:right;">${s.koTotal}</span>
     </div>`;
   }).join('');
@@ -7435,7 +7513,7 @@ function renderRepicker(){
   <div style="padding-bottom:1.5rem;">
     <div onclick="showRepickerInfo()" class="purple-banner" style="cursor:pointer;background:linear-gradient(90deg,#7c3aed,#6d28d9);border-radius:0.75rem;padding:0.85rem 1rem;margin-bottom:1rem;box-shadow:0 2px 10px rgba(124,58,237,0.3);">
       <h1 style="font-size:1.25rem;font-weight:700;margin:0;">🔄 Repicker Bracket</h1>
-      <p style="font-size:0.8rem;margin:0.3rem 0 0;line-height:1.45;opacity:0.92;">Re-pick the knockout bracket from the real draw — predict the <b>score</b> of each game, starting from the actual Round-of-32 teams. Start now with any settled matchup and come back as more places are confirmed; it locks when the knockouts kick off. <span style="text-decoration:underline;">How it works →</span></p>
+      <p style="font-size:0.8rem;margin:0.3rem 0 0;line-height:1.45;opacity:0.92;">Re-pick the knockout bracket from the real draw — predict the <b>score</b> of each game, starting from the actual Round-of-32 teams. Start now with any settled matchup and come back as more places are confirmed. <b>Each game locks at its own kickoff</b> — any game you haven't picked by then gets a random outcome, scored as a loss (−${RE_MISS_PENALTY}). <span style="text-decoration:underline;">How it works →</span></p>
     </div>
     ${adminStatus}
 
@@ -7536,6 +7614,7 @@ function reBotNextGame(){
     for(let i=1;i<=n;i++){
       const id = key==='final'?'final-1':`${key}-${i}`;
       const t=ub[id]; if(!t) continue;
+      if(reGameStarted(id)) continue;                                     // already locked at kickoff
       if(!repickerTeamKnown(t.home)||!repickerTeamKnown(t.away)) continue; // need both teams
       if(S.bot.skipped.includes(id)) continue;
       const rp=S.rePicks[id];
