@@ -7683,22 +7683,17 @@ function renderRepicker(){
       </div>`;
     }
 
-    // Sync teams into the stored pick. Reset the slot only when a previously-known
-    // team is replaced by a DIFFERENT known team (a genuine bracket change); when an
-    // unsettled side merely resolves to a real team, keep the score and update labels.
+    // Sync teams into the stored pick WITHOUT discarding the scoreline (same
+    // guarantee as the main Predict bracket). When the slot's teams change we only
+    // re-label them and keep the pen winner if it still names one of the teams.
     let rp = S.rePicks[id];
     if(!rp){
       rp = S.rePicks[id] = {home,away,homeScore:undefined,awayScore:undefined,penWinner:'',penHome:undefined,penAway:undefined};
-    } else {
-      const disruptive =
-        (homeKnown && repickerTeamKnown(rp.home) && rp.home!==home) ||
-        (awayKnown && repickerTeamKnown(rp.away) && rp.away!==away);
-      if(disruptive){
-        S.rePicks[id] = {home,away,homeScore:undefined,awayScore:undefined,penWinner:'',penHome:undefined,penAway:undefined};
-        rp = S.rePicks[id]; if(!gLocked) persistRe();
-      } else if(rp.home!==home || rp.away!==away){
-        rp.home=home; rp.away=away; if(!gLocked) persistRe();   // placeholder resolved — keep score
-      }
+    } else if(rp.home!==home || rp.away!==away){
+      const penOk = rp.penWinner && (rp.penWinner===home || rp.penWinner===away);
+      rp.home=home; rp.away=away;
+      if(!penOk){ rp.penWinner=''; rp.penHome=undefined; rp.penAway=undefined; }
+      if(!gLocked) persistRe();
     }
 
     const hv=rp.homeScore!==undefined?rp.homeScore:'';
