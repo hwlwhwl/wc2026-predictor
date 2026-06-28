@@ -5981,6 +5981,14 @@ function renderAdmin(){
 
     ${_adminGameOptions()}
 
+    <!-- ── Export everyone's locked predicted bracket (authentic, by round) ── -->
+    <h2 style="font-size:1rem;font-weight:700;color:#94a3b8;margin:2rem 0 0.35rem;border-top:1px solid rgba(255,255,255,0.08);padding-top:1.25rem;">📦 Export predicted brackets</h2>
+    <p style="font-size:0.78rem;color:#475569;margin-bottom:0.875rem;">Each person's bracket by round, rebuilt from their <b>locked group + KO picks</b> (not the live/actual draw). Download it now to keep an authentic reference to compare against results.</p>
+    <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1rem;">
+      <button onclick="exportPredictedBrackets('json')" style="padding:0.5rem 0.9rem;font-size:0.82rem;background:#16a34a;color:#fff;border:none;border-radius:0.5rem;cursor:pointer;font-weight:600;">⬇ Download JSON</button>
+      <button onclick="exportPredictedBrackets('csv')" style="padding:0.5rem 0.9rem;font-size:0.82rem;background:rgba(255,255,255,0.06);color:#cbd5e1;border:1px solid rgba(255,255,255,0.12);border-radius:0.5rem;cursor:pointer;font-weight:600;">⬇ Download CSV</button>
+    </div>
+
     <!-- ── Manual entry (fallbacks only — results normally auto-fill from ESPN) ── -->
     <h2 style="font-size:1rem;font-weight:700;color:#94a3b8;margin:2rem 0 0.35rem;border-top:1px solid rgba(255,255,255,0.08);padding-top:1.25rem;">⚙️ Manual entry (fallbacks)</h2>
     <p style="font-size:0.78rem;color:#475569;margin-bottom:0.875rem;">Results normally auto-fill from ESPN. Use these only if ESPN is wrong or hasn't posted a result yet.</p>
@@ -5997,6 +6005,45 @@ function renderAdmin(){
     </details>
 
     ${renderAdminKoEntry()}`;
+}
+
+// Reconstruct every participant's AUTHENTIC predicted bracket by round (from
+// their locked group + KO picks, not the live/actual draw) and download it.
+// userPredBracket() rebuilds R32 from group picks and later rounds from each
+// person's own KO advancers, so drifted stored team names don't matter.
+function exportPredictedBrackets(format){
+  const ppl = [{name:S.name, gPreds:S.gPreds, kPreds:S.kPreds},
+    ...S.otherUsers.map(u=>({name:u.name, gPreds:u.gPreds||{}, kPreds:u.kPreds||{}}))]
+    .filter(p=>p.name);
+  const rounds=[['r32',16],['r16',8],['qf',4],['sf',2],['final',1]];
+  const slotId=(r,i)=> r==='final' ? 'final' : `${r}-${i+1}`;
+  const rows = ppl.map(p=>{
+    const b = userPredBracket(p);
+    const row={ name:p.name, complete:Object.keys(b).length>0 };
+    for(const [r,n] of rounds){
+      row[r]=[];
+      for(let i=0;i<n;i++){ const g=b[slotId(r,i)]; row[r].push(g&&g.home&&g.away ? {home:g.home, away:g.away} : null); }
+    }
+    return row;
+  });
+  let blob, fname;
+  if(format==='csv'){
+    const q = s => `"${String(s==null?'':s).replace(/"/g,'""')}"`;
+    const lines=['name,complete,round,slot,home,away'];
+    for(const row of rows){
+      for(const [r,n] of rounds){
+        for(let i=0;i<n;i++){ const m=row[r][i];
+          lines.push([q(row.name), row.complete, r.toUpperCase(), i+1, q(m&&m.home), q(m&&m.away)].join(',')); }
+      }
+    }
+    blob=new Blob([lines.join('\n')], {type:'text/csv'}); fname='predicted-brackets.csv';
+  } else {
+    blob=new Blob([JSON.stringify({exportedAt:new Date().toISOString(), brackets:rows}, null, 2)], {type:'application/json'});
+    fname='predicted-brackets.json';
+  }
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download=fname; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
 }
 
 // ── Admin: knockout result entry ─────────────────────────────
