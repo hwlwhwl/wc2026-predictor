@@ -1914,8 +1914,12 @@ function reGameStarted(id){
   return d ? _todayISO() >= d : false;
 }
 function reHasPick(picks, id){
+  // A slot counts as picked once it has a scoreline. Team names are metadata
+  // (a slot can be scored before its opponent resolves, and older saved picks
+  // may lack the team strings) — requiring them here wrongly hid score-complete
+  // brackets from the leaderboard and mis-fired the missed-pick penalty.
   const p = picks && picks[id];
-  return !!(p && p.home && p.away && p.homeScore!=null && p.awayScore!=null);
+  return !!(p && p.homeScore!=null && p.awayScore!=null);
 }
 // True once the knockouts have kicked off (the earliest KO kickoff time passed).
 function koHasStarted(){
