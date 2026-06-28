@@ -2561,11 +2561,12 @@ function koCompare(pred, actual){
 // ── KO leaderboard scoring ───────────────────────────────────
 // Round-weight presets — admin picks one via the scoring section (S.settings.ko_weight_curve).
 const KO_ROUND_WEIGHTS = {
+  flat:     { r32:1, r16:1,   qf:1, sf:1,   final:1, '3rd':1 },
   gentle:   { r32:1, r16:1.5, qf:2, sf:2.5, final:3, '3rd':1 },
   moderate: { r32:1, r16:2,   qf:3, sf:4,   final:5, '3rd':1 },
   steep:    { r32:1, r16:2,   qf:4, sf:6,   final:8, '3rd':1 },
 };
-const KO_CURVE_LABELS = { gentle:'Gentle (1·1.5·2·2.5·3)', moderate:'Moderate (1·2·3·4·5)', steep:'Steep (1·2·4·6·8)' };
+const KO_CURVE_LABELS = { flat:'No weights (all ×1)', gentle:'Gentle (1·1.5·2·2.5·3)', moderate:'Moderate (1·2·3·4·5)', steep:'Steep (1·2·4·6·8)' };
 function koCurveName(){ return KO_ROUND_WEIGHTS[S.settings?.ko_weight_curve] ? S.settings.ko_weight_curve : 'moderate'; }
 function koWeights(){ return KO_ROUND_WEIGHTS[koCurveName()]; }
 // Repicker uses its own independent curve (falls back to moderate).
@@ -2577,6 +2578,33 @@ function koPts(){
   const s = S.settings?.ko_score_formula;
   if(s){ const a=String(s).split(',').map(Number); if(a.length===3 && a.every(x=>Number.isFinite(x)&&x>=0)) return {matchup:a[0], exact:a[1], advancer:a[2]}; }
   return {matchup:0.5, exact:3, advancer:1};
+}
+// Points per correctly-predicted team-in-a-round (default 0 → doesn't affect scores).
+function roundTeamWeight(){ const v=parseFloat(S.settings?.round_team_weight); return Number.isFinite(v)&&v>=0 ? v : 0; }
+const RT_ROUNDS = ['r32','r16','qf','sf','final'];
+// Distinct teams that actually reached each knockout round (from entered results).
+function koActualRoundTeams(){
+  const out={}; RT_ROUNDS.forEach(r=>out[r]=new Set());
+  for(const id of Object.keys(KO_VENUES)){
+    const r=S.kResults[id]; if(!r||!r.home||!r.away) continue;
+    const rd=koRoundKey(id); if(out[rd]){ out[rd].add(r.home); out[rd].add(r.away); }
+  }
+  return out;
+}
+// For one participant's KO bracket: how many of the teams they had in each round
+// actually reached that round (regardless of which game) — a "bracket survival" count.
+function koRoundTeamCounts(kPreds, actualByRound){
+  const counts={}; RT_ROUNDS.forEach(r=>counts[r]=0); let total=0;
+  const predBy={}; RT_ROUNDS.forEach(r=>predBy[r]=new Set());
+  if(kPreds) for(const [id,p] of Object.entries(kPreds)){
+    if(!p) continue; const rd=koRoundKey(id); if(!predBy[rd]) continue;
+    if(p.home) predBy[rd].add(p.home); if(p.away) predBy[rd].add(p.away);
+  }
+  for(const r of RT_ROUNDS){
+    let c=0; for(const t of predBy[r]) if(actualByRound[r].has(t)) c++;
+    counts[r]=c; total+=c;
+  }
+  counts.total=total; return counts;
 }
 function koRoundKey(id){
   if(id.startsWith('r32')) return 'r32';
@@ -5011,6 +5039,7 @@ function renderCompare(){
   }
 
   const W=getWeights(); const PK=koPts();
+  const actualByRound=koActualRoundTeams(); const RTW=roundTeamWeight();
   const lb=allPred.map(p=>{
     let groupTotal=0,exact=0,correct=0,scored=0,bad=0,surprise=0;
     for(const [gid,pr] of Object.entries(p.gPreds)){
@@ -5033,12 +5062,14 @@ function renderCompare(){
       if(resPts>0) surprise += resPts * (koOddsWeight[slot]||1);
     }
     const ko=koScoreFor(p.kPreds);
-    // Total = the weighted group formula (A×correct + B×exact − C×PAB) + weighted KO.
-    // Once any group game is complete, everyone gets a weighted score — including
-    // skip penalties — so the table matches the chart (no-pickers drop, not hide).
+    const rt=koRoundTeamCounts(p.kPreds, actualByRound);   // teams that reached each round
+    const roundTeamsPts=+(RTW*rt.total).toFixed(2);        // 0 unless admin sets a weight
+    // Total = the weighted group formula (A×correct + B×exact − C×PAB) + weighted KO
+    // + (optional) round-team points. Once any group game is complete, everyone gets
+    // a weighted score — including skip penalties — so the table matches the chart.
     const weighted=completed.length>0?+(W.a*correct+W.b*exact-W.c*bad).toFixed(2):null;
-    const total=+(((weighted ?? 0)+ko.koTotal)).toFixed(2);
-    return {name:p.name,total,groupTotal,koTotal:ko.koTotal,matchups:ko.matchups,
+    const total=+(((weighted ?? 0)+ko.koTotal+roundTeamsPts)).toFixed(2);
+    return {name:p.name,total,groupTotal,koTotal:ko.koTotal,matchups:ko.matchups,rt,roundTeamsPts,
             exact,correct,scored,bad,weighted,surprise:+surprise.toFixed(1),predCount:Object.keys(p.gPreds).length};
   }).sort((a,b)=>{
     const key=S.lbSort, dir=S.lbSortDir;
@@ -5218,6 +5249,35 @@ function renderCompare(){
       </div>`;
   })();
 
+  // ── Teams reaching each round (bracket survival) — appears once KO results exist ──
+  const roundTeamsHTML = (()=>{
+    if(!koActive || lb.length===0) return '';
+    const labels=[['r32','R32'],['r16','R16'],['qf','QF'],['sf','SF'],['final','Final']];
+    const rows=[...lb].sort((a,b)=>b.rt.total-a.rt.total||b.total-a.total).map((e,i)=>`
+      <tr style="border-bottom:1px solid rgba(255,255,255,0.04);">
+        <td style="padding:0.55rem 1rem;">${i+1}</td>
+        <td style="padding:0.55rem 1rem;color:white;font-weight:500;white-space:nowrap;">${esc(e.name)}</td>
+        ${labels.map(([k])=>`<td style="padding:0.55rem 1rem;text-align:right;color:#cbd5e1;">${e.rt[k]}</td>`).join('')}
+        <td style="padding:0.55rem 1rem;text-align:right;font-weight:700;color:#22d3ee;">${e.rt.total}</td>
+        ${RTW>0?`<td style="padding:0.55rem 1rem;text-align:right;color:#fcd34d;font-weight:600;">${e.roundTeamsPts}</td>`:''}
+      </tr>`).join('');
+    return `
+      <h2 style="font-size:1.125rem;font-weight:700;color:white;margin:0.5rem 0 0.4rem;">🌳 Teams reaching each round
+        <span style="font-size:0.72rem;color:#64748b;font-weight:400;">— how many of your teams actually got that far, in any game${RTW>0?` · worth ${RTW} pt each toward Total`:''}</span></h2>
+      <div style="background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;overflow:hidden;margin-bottom:1.25rem;">
+        <div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.875rem;">
+          <thead><tr style="color:#64748b;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.04em;border-bottom:1px solid rgba(255,255,255,0.08);">
+            <th style="padding:0.55rem 1rem;text-align:left;width:2rem;">#</th>
+            <th style="padding:0.55rem 1rem;text-align:left;">Name</th>
+            ${labels.map(([,l])=>`<th style="padding:0.55rem 1rem;text-align:right;">${l}</th>`).join('')}
+            <th style="padding:0.55rem 1rem;text-align:right;">Total</th>
+            ${RTW>0?`<th style="padding:0.55rem 1rem;text-align:right;" title="weight × teams">Pts</th>`:''}
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>
+      </div>`;
+  })();
+
   return `
     <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1.25rem;flex-wrap:wrap;gap:0.5rem;">
       <div>
@@ -5311,6 +5371,8 @@ function renderCompare(){
     <div style="display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:1.25rem;padding:0 0.25rem;">
       ${chartSeries.map((s,i)=>`<span style="font-size:0.72rem;color:#94a3b8;white-space:nowrap;"><span style="color:${CHART_COLORS[i%CHART_COLORS.length]};">●</span> ${esc(s.name)}</span>`).join('')}
     </div>`:''}
+
+    ${roundTeamsHTML}
 
     ${reSectionHTML}
 
@@ -5547,6 +5609,14 @@ function renderAdmin(){
         </label>
       </div>
       <div style="font-size:0.72rem;color:#475569;margin-top:0.5rem;">R32 · R16 · QF · SF · Final multipliers (3rd-place game ×1). Primary KO folds into the leaderboard Total; the Repicker has its own separate leaderboard.</div>
+      <div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:flex-end;margin-top:0.875rem;padding-top:0.875rem;border-top:1px solid rgba(255,255,255,0.06);">
+        <label style="display:flex;flex-direction:column;gap:0.25rem;font-size:0.8rem;color:#64748b;">
+          Teams-per-round bonus
+          <input id="rt-w" type="number" min="0" step="0.5" value="${roundTeamWeight()}" class="score-in" style="width:5rem;text-align:center;" />
+        </label>
+        <button class="btn-g" onclick="_setSetting('round_team_weight', document.getElementById('rt-w').value.trim())" style="padding:0.5rem 1rem;font-size:0.875rem;">Save</button>
+        <span style="font-size:0.72rem;color:#475569;flex:1;min-width:12rem;">Points per team of yours that reached a round (any game), added to Total. Default <b>0</b> (off). Shown in the "Teams reaching each round" leaderboard table.</span>
+      </div>
     </div>`; })()}
 
     ${(()=>{
