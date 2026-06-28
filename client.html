@@ -2698,21 +2698,58 @@ function koRoundTeamCounts(p, actualByRound){
   }
   counts.total=total; return counts;
 }
-// Knockout matchups a participant called right, per round: games where they
-// predicted BOTH teams in the matchup (regardless of score). Counts as soon as
-// the actual pairing is known (R32 once groups finish; later rounds as results
-// come in). `actualTeams` is {slot:{home,away}} from _actualKoTeams + results.
-function koMatchupByRound(kPreds, actualTeams){
+// A participant's qualifiers (1st/2nd/best-8 thirds + slot assignment) derived
+// purely from THEIR group predictions — independent of the live KO bracket,
+// which auto-syncs team names to the actual draw on the Predict tab.
+function predQualifiers(gPreds){
+  const firsts={}, seconds={}; const thirds=[];
+  for(const g of Object.keys(GROUPS)){
+    const st = predGroupStandings(g, gPreds||{});
+    if(st[0]) firsts[g]=st[0].name;
+    if(st[1]) seconds[g]=st[1].name;
+    if(st[2]) thirds.push({group:g, name:st[2].name, pts:st[2].pts||0, gd:st[2].gd||0, gf:st[2].gf||0, fp:st[2].fp||0});
+  }
+  thirds.sort(cmpThird);
+  return {firsts, seconds, thirds, slotAssignment: assign3rdToSlots(thirds.slice(0,8).map(t=>t.group))};
+}
+// The participant's predicted advancer for one game, aligned to derived teams.
+function _predAdvancerFor(kp, home, away){
+  if(!kp || kp.homeScore==null || kp.awayScore==null) return null;
+  let hs=kp.homeScore, as=kp.awayScore;
+  if(kp.home===away && kp.away===home){ hs=kp.awayScore; as=kp.homeScore; } // stored flipped vs derived
+  if(hs>as) return home; if(as>hs) return away;
+  return (kp.penWinner===home||kp.penWinner===away) ? kp.penWinner : null;   // draw → pen winner
+}
+// A participant's predicted bracket pairing per slot, built only from THEIR own
+// predictions (group picks → R32, their KO score picks → who advances). Empty
+// unless they predicted the whole group stage, so no fabricated chalk bracket.
+function userPredBracket(p){
+  const gp=p.gPreds||{};
+  const allFull = Object.keys(GROUPS).every(g=>{ const games=GROUP_GAMES.filter(x=>x.g===g); return games.length>0 && games.every(x=>gp[x.id]); });
+  const map={};
+  if(!allFull) return map;
+  const q=predQualifiers(gp); const kp=p.kPreds||{};
+  const r32=R32_FIXED.map(m=>({id:m.id, home:resolvePos(m.posA,q), away:resolvePos(m.posB,q)}));
+  const adv=g=>_predAdvancerFor(kp[g.id], g.home, g.away);
+  const r16=[[11,13],[0,2],[1,6],[8,15],[7,4],[10,12],[5,3],[9,14]].map(([a,b],i)=>({id:`r16-${i+1}`, home:adv(r32[a]), away:adv(r32[b])}));
+  const qf=[[0,1],[2,3],[4,5],[6,7]].map(([a,b],i)=>({id:`qf-${i+1}`, home:adv(r16[a]), away:adv(r16[b])}));
+  const sf=[{id:'sf-1',home:adv(qf[0]),away:adv(qf[2])},{id:'sf-2',home:adv(qf[1]),away:adv(qf[3])}];
+  const fin=[{id:'final',home:adv(sf[0]),away:adv(sf[1])}];
+  [...r32,...r16,...qf,...sf,...fin].forEach(g=>{ map[g.id]={home:g.home, away:g.away}; });
+  return map;
+}
+// Knockout matchups a participant called right, per round: actual pairings
+// (real results only) where their predicted bracket placed BOTH teams in that
+// same slot. `actualTeams` is {slot:{home,away}} built from real data only.
+function koMatchupByRound(p, actualTeams){
   const out={r32:0,r16:0,qf:0,sf:0,final:0,total:0};
-  if(!kPreds) return out;
-  for(const id of Object.keys(KO_VENUES)){
+  const pred=userPredBracket(p);
+  for(const id of Object.keys(actualTeams||{})){
     if(id==='3rd') continue;
-    const at=actualTeams&&actualTeams[id];
-    if(!at||!at.home||!at.away) continue;                 // matchup not set yet
-    const pr=kPreds[id];
-    if(!pr||!pr.home||!pr.away||pr.home===pr.away) continue;
+    const at=actualTeams[id]; if(!at||!at.home||!at.away) continue;
+    const pp=pred[id]; if(!pp||!pp.home||!pp.away||pp.home===pp.away) continue;
     const actualSet=new Set([at.home, at.away]);
-    if(actualSet.has(pr.home) && actualSet.has(pr.away)){ const rk=koRoundKey(id); if(out[rk]!=null){ out[rk]++; out.total++; } }
+    if(actualSet.has(pp.home) && actualSet.has(pp.away)){ const rk=koRoundKey(id); if(out[rk]!=null){ out[rk]++; out.total++; } }
   }
   return out;
 }
@@ -5215,11 +5252,14 @@ function renderCompare(){
 
   const W=getWeights(); const PK=koPts();
   const actualByRound=koActualRoundTeams(); const RTW=roundTeamWeight(); const RTC=roundTeamCurve();
-  // Actual matchup teams per KO slot (resolved bracket + any real results), computed
-  // once for the "matchups called right" counts in the round-survival table.
-  let actualKoTeams={};
-  try{ actualKoTeams=_actualKoTeams(); }catch(e){ actualKoTeams={}; }
-  for(const id of Object.keys(KO_VENUES)){ const r=S.kResults[id]; if(r&&r.home&&r.away) actualKoTeams[id]={home:r.home,away:r.away}; }
+  // Actual matchup teams per KO slot, from REAL data only (no predictions):
+  // R32 from the actual qualifiers once the group stage is fully decided; later
+  // rounds only once their game has a real result. Used for "matchups called right".
+  const actualKoTeams={};
+  if(completed.length===GROUP_GAMES.length){
+    try{ const aq=getQualifiers(); R32_FIXED.forEach(m=>{ actualKoTeams[m.id]={home:resolvePos(m.posA,aq), away:resolvePos(m.posB,aq)}; }); }catch(e){}
+  }
+  for(const id of Object.keys(KO_VENUES)){ if(id==='3rd') continue; const r=S.kResults[id]; if(r&&r.home&&r.away&&r.homeScore!=null) actualKoTeams[id]={home:r.home,away:r.away}; }
   const lb=allPred.map(p=>{
     let groupTotal=0,exact=0,correct=0,scored=0,bad=0,surprise=0;
     for(const [gid,pr] of Object.entries(p.gPreds)){
@@ -5250,7 +5290,7 @@ function renderCompare(){
     const weighted=completed.length>0?+(W.a*correct+W.b*exact-W.c*bad).toFixed(2):null;
     const total=+(((weighted ?? 0)+ko.koTotal+roundTeamsPts)).toFixed(2);
     return {name:p.name,total,groupTotal,koTotal:ko.koTotal,matchups:ko.matchups,rt,roundTeamsPts,
-            koMatchupRound:koMatchupByRound(p.kPreds, actualKoTeams),
+            koMatchupRound:koMatchupByRound(p, actualKoTeams),
             exact,correct,scored,bad,weighted,surprise:+surprise.toFixed(1),predCount:Object.keys(p.gPreds).length};
   }).sort((a,b)=>{
     const key=S.lbSort, dir=S.lbSortDir;
