@@ -2801,7 +2801,11 @@ function koScoreFor(kPreds){
     let teams=0, resultPts=0;
     if(c.kind==='half'){ teams=1; if(c.halfAdv){ resultPts=P.advancer; advancers++; } }
     else if(c.kind==='teams') teams=2;
-    else if(c.kind==='full'){ teams=2; resultPts = c.exact?P.exact : c.advOk?P.advancer : 0; if(c.exact)exacts++; else if(c.advOk)advancers++; }
+    else if(c.kind==='full'){
+      teams=2;
+      if(c.advOk){ resultPts += P.advancer; advancers++; }   // correct outcome
+      if(c.exact){ resultPts += P.exact;    exacts++; }       // exact scoreline stacks on top
+    }
     if(teams>0 || resultPts>0) scored++;
     const matchupPts = P.matchup*teams;
     matchups += matchupPts;
@@ -2834,7 +2838,11 @@ function koScoreForRepicker(rePicks){
   const w = reWeights(); const P = koPts();
   const ids = RE_SLOT_IDS;
   const rk = id => id.startsWith('r32')?'r32':id.startsWith('r16')?'r16':id.startsWith('qf')?'qf':id.startsWith('sf')?'sf':'final';
-  let koTotal=0, matchups=0, exacts=0, advancers=0, scored=0, penalties=0;
+  let koTotal=0, matchups=0, scored=0, penalties=0;
+  // Independent achievement counts (no weights): right matchup (both teams),
+  // right advancer, exact score. Cumulative — an exact game also counts as a
+  // correct advancer and a correct matchup.
+  let matchCount=0, advCount=0, exactCount=0;
   for(const id of ids){
     const actual = S.kResults[id==='final-1'?'final':id];
     if(!actual || !actual.home || !actual.away || actual.homeScore==null) continue;
@@ -2846,14 +2854,21 @@ function koScoreForRepicker(rePicks){
     }
     const c = koCompare(rePicks ? rePicks[id] : undefined, actual);
     let teams=0, resultPts=0;
-    if(c.kind==='half'){ teams=1; if(c.halfAdv){ resultPts=P.advancer; advancers++; } }
-    else if(c.kind==='teams') teams=2;
-    else if(c.kind==='full'){ teams=2; resultPts = c.exact?P.exact : c.advOk?P.advancer : 0; if(c.exact)exacts++; else if(c.advOk)advancers++; }
+    if(c.kind==='half'){ teams=1; if(c.halfAdv){ resultPts=P.advancer; advCount++; } }
+    else if(c.kind==='teams'){ teams=2; matchCount++; }
+    else if(c.kind==='full'){
+      teams=2; matchCount++;
+      // Advancer and exact stack: a correct outcome scores P.advancer, an exact
+      // scoreline adds P.exact on top (exact only when both teams are correct).
+      if(c.advOk){ resultPts += P.advancer; advCount++; }
+      if(c.exact){ resultPts += P.exact;    exactCount++; }
+    }
     if(teams>0 || resultPts>0) scored++;
     const mp=P.matchup*teams; matchups += mp;
     koTotal += (mp+resultPts) * (w[rk(id)] || 1);
   }
-  return { koTotal:+koTotal.toFixed(2), matchups:+matchups.toFixed(1), exacts, advancers, scored, penalties };
+  return { koTotal:+koTotal.toFixed(2), matchups:+matchups.toFixed(1),
+           matchCount, advCount, exactCount, scored, penalties };
 }
 
 // Build Round of 16 matchups from R32 winners
@@ -5090,6 +5105,59 @@ function _entryAvatar(name){
   if(clean===S.name) return S.avatar||'';
   return (S.otherUsers.find(u=>u.name===clean)?.avatar)||'';
 }
+// One podium avatar (bounces when `bounce` is set — used when someone newly
+// reaches the podium).
+function _podiumAvatar(name, accent, size, bounce){
+  const av=_entryAvatar(name);
+  const cls=bounce?'lead-bounce':'';
+  const common=`width:${size}px;height:${size}px;border-radius:50%;flex-shrink:0;box-shadow:0 4px 14px rgba(0,0,0,0.5),0 0 0 2.5px ${accent};`;
+  return av
+    ? `<img src="${av}" title="${esc(name.replace(/\s*\(you\)\s*$/i,''))}" class="${cls}" style="${common}object-fit:cover;">`
+    : `<span title="${esc(name.replace(/\s*\(you\)\s*$/i,''))}" class="${cls}" style="${common}background:rgba(255,255,255,0.08);display:inline-flex;align-items:center;justify-content:center;font-size:${Math.round(size*0.4)}px;font-weight:700;color:#cbd5e1;">${esc(abbrevName(name))}</span>`;
+}
+// A 2·1·3 podium. Ties share a slot and consume the ones below (3-way tie for
+// gold ⇒ empty silver & bronze — standard competition ranking). Anyone newly on
+// the podium since the viewer last saw it bounces. `storageKey` namespaces the
+// bounce memory per podium.
+function renderPodium(entries, getVal, title, storageKey){
+  if(!entries || !entries.length) return '';
+  const sorted=[...entries].sort((a,b)=>getVal(b)-getVal(a));
+  if(getVal(sorted[0])<=0) return '';
+  const slots={1:[],2:[],3:[]};
+  for(const e of sorted){ const rank=1+sorted.filter(x=>getVal(x)>getVal(e)).length; if(rank<=3) slots[rank].push(e); }
+  if(!slots[1].length) return '';
+  const clean=n=>n.replace(/\s*\(you\)\s*$/i,'');
+  const cur=[...slots[1],...slots[2],...slots[3]].map(e=>clean(e.name));
+  let prev=null; try{ prev=JSON.parse(localStorage.getItem(storageKey)||'null'); }catch(e){}
+  const prevSet=new Set(prev||[]);
+  const bounce=nm=> prev!=null && !prevSet.has(clean(nm));   // newly on the podium
+  try{ localStorage.setItem(storageKey, JSON.stringify(cur)); }catch(e){}
+  const medals={1:'🥇',2:'🥈',3:'🥉'}, accents={1:'#fcd34d',2:'#cbd5e1',3:'#e0a878'};
+  const ped={1:{h:'5.5rem',size:72},2:{h:'3.75rem',size:56},3:{h:'2.75rem',size:56}};
+  const col=rank=>{
+    const list=slots[rank], a=accents[rank], p=ped[rank];
+    if(!list.length) return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:0.35rem;min-width:0;opacity:0.45;">
+        <div style="font-size:1.15rem;line-height:1;filter:grayscale(1);">${medals[rank]}</div>
+        <div style="width:100%;height:${p.h};background:rgba(255,255,255,0.03);border:1px dashed rgba(255,255,255,0.1);border-bottom:none;border-radius:0.5rem 0.5rem 0 0;"></div>
+      </div>`;
+    const avatars=list.map(e=>_podiumAvatar(e.name,a,p.size,bounce(e.name))).join('');
+    const label=list.length===1
+      ? `${esc(clean(list[0].name))}${/\(you\)\s*$/i.test(list[0].name)?' (you)':''}`
+      : `${list.length} tied`;
+    return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:0.35rem;min-width:0;">
+      <div style="display:flex;align-items:flex-end;gap:3px;flex-wrap:wrap;justify-content:center;">${avatars}</div>
+      <div style="font-size:1.15rem;line-height:1;">${medals[rank]}</div>
+      <div style="font-size:0.78rem;font-weight:600;color:#e2e8f0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${label}</div>
+      <div style="width:100%;height:${p.h};background:linear-gradient(180deg,${a}33,${a}0d);border:1px solid ${a}55;border-bottom:none;border-radius:0.5rem 0.5rem 0 0;display:flex;align-items:flex-start;justify-content:center;padding-top:0.4rem;">
+        <span style="font-size:1.05rem;font-weight:800;color:${a};">${getVal(list[0])}</span>
+      </div>
+    </div>`;
+  };
+  return `<div style="background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;padding:1rem 1rem 0;margin-bottom:1.25rem;">
+    <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;margin-bottom:0.75rem;text-align:center;">${title}</div>
+    <div style="display:flex;align-items:flex-end;gap:0.5rem;">${[2,1,3].map(col).join('')}</div>
+  </div>`;
+}
 // Per-viewer record of which titles the viewer currently holds (for the
 // "you took the lead" bounce). { label: bool }.
 function _loadTitleLeaders(key){ try{ return JSON.parse(localStorage.getItem(key||'wc26_title_leaders')||'null'); }catch(e){ return null; } }
@@ -5359,8 +5427,7 @@ function renderCompare(){
         ${thSort('total',   'Total',   'Weighted score (A×correct + B×exact − C×PAB) + weighted knockout points')}
         ${thSort('surprise','Surprise','Odds-weighted: each correct result (group W/D/L or KO advancer) earns its points × the crowd odds of that outcome, capped at ×'+ODDS_WEIGHT_CAP+' — calling an upset few backed is worth more')}
         ${koActive?thSort('weighted','Group','Weighted group score: A×correct + B×exact − C×PAB'):''}
-        ${koActive?thSort('koTotal',  'Knockout pts', 'Knockout points: matchup (per correct team) + result (advancer / exact), weighted by round'):''}
-        ${koActive?thSort('matchups', 'Match', 'Knockout matchups called right (0.5 per correct team)'):''}
+        ${koActive?thSort('koTotal',  '🥊', 'Knockout points: correct advancer + exact-score bonus, weighted by round'):''}
         ${thSort('exact',   'Exact',   'Group exact scores predicted')}
         ${thSort('correct', 'Result✓', 'Group games where W/D/L result was correct')}
         ${thSort('bad',     'Points↓', 'Total group goal error vs actual scores (a skipped game counts as +3) — lower is better')}
@@ -5384,7 +5451,6 @@ function renderCompare(){
           <td style="padding:0.75rem 1rem;text-align:right;color:#f0abfc;font-weight:600;">${e.scored>0?e.surprise:'–'}</td>
           ${koActive?`<td style="padding:0.75rem 1rem;text-align:right;color:#94a3b8;">${e.weighted ?? 0}</td>`:''}
           ${koActive?`<td style="padding:0.75rem 1rem;text-align:right;color:#a78bfa;font-weight:600;">${e.koTotal}</td>`:''}
-          ${koActive?`<td style="padding:0.75rem 1rem;text-align:right;color:#22d3ee;">${e.matchups}</td>`:''}
           <td style="padding:0.75rem 1rem;text-align:right;color:#4ade80;">${e.exact}</td>
           <td style="padding:0.75rem 1rem;text-align:right;color:#facc15;">${e.correct}</td>
           <td style="padding:0.75rem 1rem;text-align:right;color:#f87171;font-weight:600;">${completed.length>0?e.bad:'–'}</td>
@@ -5440,14 +5506,14 @@ function renderCompare(){
         : `<span style="display:inline-block;width:22px;height:22px;border-radius:50%;background:rgba(255,255,255,0.07);text-align:center;line-height:22px;margin-right:0.4rem;font-size:0.7rem;vertical-align:middle;">🧑</span>`;
     };
     const leader = reLbAll[0];
-    const matchLeader = [...reLbAll].sort((a,b)=>b.matchups-a.matchups)[0];
+    const exactLeader = [...reLbAll].sort((a,b)=>b.exactCount-a.exactCount)[0];
 
     // "You took the lead" bounce for the repicker titles (separate localStorage key).
     const maxKo = reLbAll[0].koTotal;
-    const maxMatch = Math.max(...reLbAll.map(e=>e.matchups));
+    const maxExact = Math.max(...reLbAll.map(e=>e.exactCount));
     const reCur = {
       'Repicker leader': reLbAll.some(e=>e.koTotal===maxKo && e.name===S.name),
-      'Most matchups':   reLbAll.some(e=>e.matchups===maxMatch && e.name===S.name),
+      'Most exact':      maxExact>0 && reLbAll.some(e=>e.exactCount===maxExact && e.name===S.name),
     };
     const rePrev = _loadTitleLeaders('wc26_re_title_leaders');
     const reBounce = {};
@@ -5455,7 +5521,7 @@ function renderCompare(){
     _saveTitleLeaders(reCur, 'wc26_re_title_leaders');
 
     const koWinners    = reLbAll.filter(e=>e.koTotal===maxKo).map(e=>e.name);
-    const matchWinners = reLbAll.filter(e=>e.matchups===maxMatch).map(e=>e.name);
+    const exactWinners = reLbAll.filter(e=>e.exactCount===maxExact).map(e=>e.name);
     const tile = (icon,label,names,val,accent,bounce)=>{
       const avs = _tiedAvatars(names, accent, bounce, 30);
       return `<div style="background:#112a45;border:1px solid ${accent}33;border-radius:0.75rem;padding:0.75rem;min-width:0;">
@@ -5474,26 +5540,26 @@ function renderCompare(){
         <td style="padding:0.6rem 1rem;">${i<3?MED[i]:i+1}</td>
         <td style="padding:0.6rem 1rem;color:white;font-weight:500;white-space:nowrap;">${avFor(e.name)}${esc(e.name)}${e.name===S.name?' (you)':''}${e.complete?'':` <span title="Bracket not finished — ${e.picked}/${RE_SLOT_IDS.length} games picked" style="font-size:0.6rem;color:#fbbf24;background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.3);border-radius:0.3rem;padding:0.05rem 0.3rem;vertical-align:middle;">partial ${e.picked}/${RE_SLOT_IDS.length}</span>`}</td>
         <td style="padding:0.6rem 1rem;text-align:right;font-weight:700;color:#a78bfa;">${e.koTotal}</td>
-        <td style="padding:0.6rem 1rem;text-align:right;color:#22d3ee;">${e.matchups}</td>
-        <td style="padding:0.6rem 1rem;text-align:right;color:#4ade80;">${e.exacts}</td>
-        <td style="padding:0.6rem 1rem;text-align:right;color:${e.penalties?'#f87171':'#475569'};">${e.penalties?`−${e.penalties*RE_MISS_PENALTY}`:'—'}</td>
+        <td style="padding:0.6rem 1rem;text-align:right;color:#cbd5e1;">${e.matchCount}</td>
+        <td style="padding:0.6rem 1rem;text-align:right;color:#22d3ee;">${e.advCount}</td>
+        <td style="padding:0.6rem 1rem;text-align:right;color:#4ade80;">${e.exactCount}</td>
       </tr>`).join('');
     return `
       <h2 style="font-size:1.125rem;font-weight:700;color:white;margin:0.5rem 0 0.75rem;">🔄 Repicker leaderboard
         <span style="font-size:0.72rem;color:#64748b;font-weight:400;">— separate game (KO bracket re-picked from the real Round of 32) · <span style="color:#fbbf24;">partial</span> = bracket still in progress</span></h2>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.625rem;margin-bottom:0.75rem;">
         ${tile('🔄','Repicker leader',koWinners,leader.koTotal,'#a78bfa',reBounce['Repicker leader'])}
-        ${tile('🎯','Most matchups',matchWinners,matchLeader.matchups,'#22d3ee',reBounce['Most matchups'])}
+        ${tile('🎯','Most exact scores',exactWinners,exactLeader.exactCount,'#4ade80',reBounce['Most exact'])}
       </div>
       <div style="background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;overflow:hidden;margin-bottom:1.25rem;">
         <div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.875rem;">
           <thead><tr style="color:#64748b;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.04em;border-bottom:1px solid rgba(255,255,255,0.08);">
             <th style="padding:0.6rem 1rem;text-align:left;width:2rem;">#</th>
             <th style="padding:0.6rem 1rem;text-align:left;">Name</th>
-            <th style="padding:0.6rem 1rem;text-align:right;">KO pts</th>
-            <th style="padding:0.6rem 1rem;text-align:right;">Match</th>
-            <th style="padding:0.6rem 1rem;text-align:right;">Exact</th>
-            <th style="padding:0.6rem 1rem;text-align:right;" title="Penalty for games not picked before kickoff">Miss</th>
+            <th style="padding:0.6rem 1rem;text-align:right;" title="Overall score (weighted)">Score</th>
+            <th style="padding:0.6rem 1rem;text-align:right;" title="Games with both teams correct">Matches</th>
+            <th style="padding:0.6rem 1rem;text-align:right;" title="Games where you called the advancing team right">Advancer</th>
+            <th style="padding:0.6rem 1rem;text-align:right;" title="Games with the exact score (both teams must be correct)">Exact</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table></div>
@@ -5530,67 +5596,11 @@ function renderCompare(){
   })();
 
   // ── Overall podium (top 3 by Total) — sits between the KO and overall tables ──
-  const podiumHTML = (lb.length>0 && completed.length>0) ? (()=>{
-    const top=[...lb].sort((a,b)=>b.total-a.total).slice(0,3);
-    if(!top.length || top[0].total<=0) return '';
-    const av=(e,size,accent)=>{
-      const imp=S.otherUsers.find(x=>x.name===e.name||(x.name+' (you)')===e.name);
-      const isSelf=(e.name===S.name+' (you)');
-      const src=isSelf?S.avatar:(imp?.avatar||'');
-      return src
-        ?`<img src="${src}" style="width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;box-shadow:0 4px 14px rgba(0,0,0,0.5);border:2.5px solid ${accent};" />`
-        :`<span style="width:${size}px;height:${size}px;border-radius:50%;background:rgba(255,255,255,0.08);display:inline-flex;align-items:center;justify-content:center;font-size:${Math.round(size*0.45)}px;border:2.5px solid ${accent};">🧑</span>`;
-    };
-    const medals=['🥇','🥈','🥉'], accents=['#fcd34d','#cbd5e1','#e0a878'];
-    const ped=[{h:'5.5rem',size:84},{h:'3.75rem',size:64},{h:'2.75rem',size:64}];
-    const col=rank=>{
-      const e=top[rank]; if(!e) return `<div style="flex:1;"></div>`;
-      const a=accents[rank], p=ped[rank];
-      const youSuffix=e.name.endsWith('(you)')?' (you)':'';
-      const name=e.name.replace(/ \(you\)$/,'');
-      return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:0.35rem;min-width:0;">
-        ${av(e,p.size,a)}
-        <div style="font-size:1.15rem;line-height:1;">${medals[rank]}</div>
-        <div style="font-size:0.8rem;font-weight:600;color:#e2e8f0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(name)}${youSuffix}</div>
-        <div style="width:100%;height:${p.h};background:linear-gradient(180deg,${a}33,${a}0d);border:1px solid ${a}55;border-bottom:none;border-radius:0.5rem 0.5rem 0 0;display:flex;align-items:flex-start;justify-content:center;padding-top:0.4rem;">
-          <span style="font-size:1.05rem;font-weight:800;color:${a};">${e.total}</span>
-        </div>
-      </div>`;
-    };
-    return `<div style="background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;padding:1rem 1rem 0;margin-bottom:1.25rem;">
-      <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;margin-bottom:0.75rem;text-align:center;">🏆 Overall podium</div>
-      <div style="display:flex;align-items:flex-end;gap:0.5rem;">${[1,0,2].map(col).join('')}</div>
-    </div>`;
-  })() : '';
+  const podiumHTML = (lb.length>0 && completed.length>0)
+    ? renderPodium(lb, e=>e.total, '🏆 Overall podium', 'wc26_podium_overall') : '';
 
-  // ── Repick podium (top 3 by repicker KO points) for the Repick sub-tab ──
-  const repickPodiumHTML = (reLbAll.length>0 && reLbAll[0].koTotal>0) ? (()=>{
-    const top=[...reLbAll].sort((a,b)=>b.koTotal-a.koTotal).slice(0,3);
-    const av=(name,size,accent)=>{
-      const src=(name===S.name)?S.avatar:(S.otherUsers.find(x=>x.name===name)?.avatar||'');
-      return src
-        ?`<img src="${src}" style="width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;box-shadow:0 4px 14px rgba(0,0,0,0.5);border:2.5px solid ${accent};" />`
-        :`<span style="width:${size}px;height:${size}px;border-radius:50%;background:rgba(255,255,255,0.08);display:inline-flex;align-items:center;justify-content:center;font-size:${Math.round(size*0.45)}px;border:2.5px solid ${accent};">🧑</span>`;
-    };
-    const medals=['🥇','🥈','🥉'], accents=['#fcd34d','#cbd5e1','#e0a878'];
-    const ped=[{h:'5.5rem',size:84},{h:'3.75rem',size:64},{h:'2.75rem',size:64}];
-    const col=rank=>{
-      const e=top[rank]; if(!e) return `<div style="flex:1;"></div>`;
-      const a=accents[rank], p=ped[rank];
-      return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:0.35rem;min-width:0;">
-        ${av(e.name,p.size,a)}
-        <div style="font-size:1.15rem;line-height:1;">${medals[rank]}</div>
-        <div style="font-size:0.8rem;font-weight:600;color:#e2e8f0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(e.name)}${e.name===S.name?' (you)':''}</div>
-        <div style="width:100%;height:${p.h};background:linear-gradient(180deg,${a}33,${a}0d);border:1px solid ${a}55;border-bottom:none;border-radius:0.5rem 0.5rem 0 0;display:flex;align-items:flex-start;justify-content:center;padding-top:0.4rem;">
-          <span style="font-size:1.05rem;font-weight:800;color:${a};">${e.koTotal}</span>
-        </div>
-      </div>`;
-    };
-    return `<div style="background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;padding:1rem 1rem 0;margin-bottom:1.25rem;">
-      <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;margin-bottom:0.75rem;text-align:center;">🔄 Repick podium</div>
-      <div style="display:flex;align-items:flex-end;gap:0.5rem;">${[1,0,2].map(col).join('')}</div>
-    </div>`;
-  })() : '';
+  // ── Repick podium (by repicker KO points) for the Repick sub-tab ──
+  const repickPodiumHTML = renderPodium(reLbAll, e=>e.koTotal, '🔄 Repick podium', 'wc26_podium_repick');
 
   // Sub-tabs: Original (the main game) vs Repick (the KO re-pick game). Default
   // to Repick once the knockouts are under way; sticky once the user clicks.
@@ -7827,14 +7837,15 @@ function renderRepicker(){
     .map(([name,picks])=>({ name, ...koScoreForRepicker(picks),
       complete: rePickComplete(picks),
       picked: RE_SLOT_IDS.filter(id=>reHasPick(picks,id)).length }))
-    .sort((a,b)=>b.koTotal-a.koTotal||b.matchups-a.matchups||a.name.localeCompare(b.name));
+    .sort((a,b)=>b.koTotal-a.koTotal||b.exactCount-a.exactCount||a.name.localeCompare(b.name));
   const lbRows = scored.map((s,i)=>{
     const isSelf=s.name===S.name;
     return `<div style="display:flex;align-items:center;gap:0.5rem;padding:0.45rem 0.75rem;${isSelf?'background:rgba(22,163,74,0.08);border-radius:0.5rem;':''}">
       <span style="color:#475569;font-size:0.75rem;width:1.5rem;text-align:center;">#${i+1}</span>
       <span style="flex:1;font-size:0.875rem;color:${isSelf?'#4ade80':'#cbd5e1'};font-weight:${isSelf?600:400};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(s.name)}${isSelf?' (you)':''}${s.complete?'':` <span title="Bracket not finished — ${s.picked}/${RE_SLOT_IDS.length} games picked" style="font-size:0.6rem;color:#fbbf24;background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.3);border-radius:0.3rem;padding:0.05rem 0.3rem;">partial ${s.picked}/${RE_SLOT_IDS.length}</span>`}</span>
-      <span style="font-size:0.72rem;color:#22d3ee;white-space:nowrap;" title="Matchups called right">${s.matchups} mt</span>
-      ${s.penalties?`<span style="font-size:0.72rem;color:#f87171;white-space:nowrap;" title="Games not picked before kickoff (−${RE_MISS_PENALTY} each)">−${s.penalties*RE_MISS_PENALTY}</span>`:''}
+      <span style="font-size:0.72rem;color:#cbd5e1;white-space:nowrap;" title="Both teams correct">${s.matchCount} m</span>
+      <span style="font-size:0.72rem;color:#22d3ee;white-space:nowrap;" title="Correct advancer">${s.advCount} a</span>
+      <span style="font-size:0.72rem;color:#4ade80;white-space:nowrap;" title="Exact score">${s.exactCount} e</span>
       <span style="font-size:0.82rem;color:#fcd34d;font-weight:700;font-family:monospace;white-space:nowrap;min-width:3rem;text-align:right;">${s.koTotal}</span>
     </div>`;
   }).join('');
