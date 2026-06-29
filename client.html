@@ -2871,6 +2871,51 @@ function koScoreForRepicker(rePicks){
            matchCount, advCount, exactCount, scored, penalties };
 }
 
+// Compact "knockout results + everyone's repicks" grid for the Repick sub-tab —
+// mirrors the Results-tab knockout grid but reads each player's repicker bracket.
+function repickerResultsGrid(){
+  const parts = Object.entries(S.allRePicks||{})
+    .filter(([,picks])=> reQualified(picks))
+    .map(([name,picks])=>({name, picks}))
+    .sort((a,b)=> a.name===S.name?-1 : b.name===S.name?1 : a.name.localeCompare(b.name));
+  const entered = Object.keys(KO_VENUES).filter(id=>{ if(id==='3rd') return false; const r=S.kResults[id]; return r&&r.home&&r.away&&r.homeScore!=null; });
+  if(!parts.length || !entered.length) return '';
+  const reSlot = id => id==='final' ? 'final-1' : id;
+  const roundLabel = id => id.startsWith('r32')?'Round of 32':id.startsWith('r16')?'Round of 16':id.startsWith('qf')?'Quarter-finals':id.startsWith('sf')?'Semi-finals':id==='final'?'Final':id;
+  const TH=`padding:0.45rem 0.5rem;color:#64748b;font-size:0.62rem;font-weight:700;text-transform:uppercase;`;
+  const TD=`padding:0.4rem 0.5rem;border-top:1px solid rgba(255,255,255,0.04);`;
+  const cell=(p,id,actual)=>{
+    const c=koCompare(p.picks[reSlot(id)], actual);
+    const base=`${TD}text-align:center;font-family:monospace;font-weight:600;white-space:nowrap;`;
+    if(c.kind==='nopick') return `<td style="${base}color:#334155;">–</td>`;
+    if(c.kind==='wrong')  return `<td style="${base}color:#64748b;" title="${esc(c.predLabel)}">✗</td>`;
+    if(c.kind==='half')   return `<td style="${base}color:#fbbf24;background:rgba(251,191,36,0.08);" title="One team right — ${esc(c.predLabel)}">½</td>`;
+    if(c.kind==='teams')  return `<td style="${base}color:#4ade80;" title="Right matchup, no score">✓</td>`;
+    const dh=`<span style="color:${c.homeOk?'#4ade80':'#f87171'};">${c.ph}</span>`;
+    const da=`<span style="color:${c.awayOk?'#4ade80':'#f87171'};">${c.pa}</span>`;
+    const badge=c.exact?' 🎯':c.advOk?'':' ✗';
+    const bg=c.exact?'rgba(74,222,128,0.12)':c.advOk?'rgba(74,222,128,0.06)':'rgba(248,113,113,0.06)';
+    return `<td style="${base}background:${bg};">${dh}–${da}${badge}</td>`;
+  };
+  const gameCell=actual=>{
+    const pen=(actual.homeScore===actual.awayScore&&actual.penWinner)?` <span style="color:#94a3b8;font-size:0.58rem;">pens ${esc(shortTeamName(actual.penWinner))}</span>`:'';
+    return `<td style="${TD}font-size:0.78rem;white-space:nowrap;"><span style="color:white;">${esc(shortTeamName(actual.home))}</span> <span style="color:#475569;">v</span> <span style="color:white;">${esc(shortTeamName(actual.away))}</span> <span style="color:#fcd34d;font-family:monospace;font-weight:800;margin-left:0.25rem;">${actual.homeScore}–${actual.awayScore}</span>${pen}</td>`;
+  };
+  let body='', last='';
+  for(const id of entered){
+    const actual=S.kResults[id]; const rl=roundLabel(id);
+    if(rl!==last){ body+=`<tr><td colspan="${1+parts.length}" style="padding:0.35rem 0.5rem;background:#0a1628;color:#fbbf24;font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;position:sticky;left:0;">${rl}</td></tr>`; last=rl; }
+    body+=`<tr>${gameCell(actual)}${parts.map(p=>cell(p,id,actual)).join('')}</tr>`;
+  }
+  const header=`<tr><th style="${TH}text-align:left;">Match</th>${parts.map(p=>`<th style="${TH}text-align:center;" title="${esc(p.name)}">${esc(abbrevName(p.name))}</th>`).join('')}</tr>`;
+  return `
+    <h2 style="font-size:1.05rem;font-weight:700;color:white;margin:0.5rem 0 0.5rem;">🏆 Knockout results — repicks</h2>
+    <div style="overflow:auto;background:#112a45;border:1px solid rgba(255,255,255,0.08);border-radius:0.75rem;">
+      <table style="width:100%;border-collapse:collapse;font-size:0.8rem;"><thead>${header}</thead><tbody>${body}</tbody></table>
+    </div>
+    <div style="font-size:0.64rem;color:#64748b;margin:0.4rem 0 1.25rem;">🎯 exact · ✓ right matchup (no score) · <span style="color:#fbbf24;">½</span> one team · ✗ different matchup</div>`;
+}
+
 // Build Round of 16 matchups from R32 winners
 function buildR16(q){
   // Resolve the underlying R32 games so we know who's playing whom.
@@ -5249,12 +5294,12 @@ function todaysGamesPanel(parts, repickMode){
   const reSlot = slot => (repickMode && slot==='final') ? 'final-1' : slot;
   const seg=(n,color,on)=>`<span style="color:${color};font-weight:${on?800:600};${on?'text-decoration:underline;':''}">${n}</span>`;
   const pickCell=(txt,color)=>`<span title="Your pick" style="flex-shrink:0;width:2.9rem;text-align:left;font-family:monospace;font-size:0.74rem;font-weight:700;color:${color};">${txt}</span>`;
-  const rowHTML=(pick,homeT,awayT,mid,dist)=>`<div style="display:flex;align-items:center;gap:0.5rem;padding:0.35rem 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:0.82rem;">
+  const rowHTML=(pick,homeT,awayT,mid,dist,popupCall)=>`<div style="display:flex;align-items:center;gap:0.5rem;padding:0.35rem 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:0.82rem;">
       ${pick}
       <span style="flex:1;min-width:0;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#e2e8f0;">${esc(shortTeamName(homeT))} ${flag(homeT)}</span>
       <span style="flex-shrink:0;min-width:5.5rem;text-align:center;">${mid}</span>
       <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#e2e8f0;">${flag(awayT)} ${esc(shortTeamName(awayT))}</span>
-      <span title="How players picked — left team · (draw) · right team" style="flex-shrink:0;font-size:0.72rem;font-family:monospace;min-width:3.5rem;text-align:right;">${dist}</span>
+      <span onclick="${popupCall}" title="Tap to see how everyone picked" style="cursor:pointer;flex-shrink:0;font-size:0.72rem;font-family:monospace;min-width:3.5rem;text-align:right;">${dist}</span>
     </div>`;
 
   const entries=[];
@@ -5276,7 +5321,7 @@ function todaysGamesPanel(parts, repickMode){
       if(myp){ pickTxt=`${myp[0]}–${myp[1]}`; if(aH!=null){ const p2=pts(myp[0],myp[1],aH,aA); pickCol=p2===3?'#4ade80':p2===1?'#facc15':'#f87171'; } else pickCol='#94a3b8'; }
       const d=_pickDist(g.id, parts);
       const dist=`${seg(d.h,'#60a5fa',actual==='h')}·${seg(d.d,'#94a3b8',actual==='d')}·${seg(d.a,'#fb923c',actual==='a')}`;
-      return rowHTML(pickCell(pickTxt,pickCol), g.home, g.away, mid, dist);
+      return rowHTML(pickCell(pickTxt,pickCol), g.home, g.away, mid, dist, `showPicksPopup('group',${g.id},false)`);
     }
     const slot=e.slot, live=S.gLive[slot], done=S.kResults[slot];
     let homeT, awayT, mid='', actResult=null;
@@ -5297,7 +5342,7 @@ function todaysGamesPanel(parts, repickMode){
     }
     const d=_koResultDist(reSlot(slot), homeT, awayT, parts);   // 3-way: home win · draw(pens) · away win
     const dist=`${seg(d.h,'#60a5fa',actResult==='h')}·${seg(d.d,'#94a3b8',actResult==='d')}·${seg(d.a,'#fb923c',actResult==='a')}`;
-    return rowHTML(pickCell(pickTxt,pickCol), homeT, awayT, mid, dist);
+    return rowHTML(pickCell(pickTxt,pickCol), homeT, awayT, mid, dist, `showPicksPopup('ko','${slot}',${!!repickMode})`);
   });
 
   return `<div style="background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;padding:0.6rem 1rem 0.4rem;margin-bottom:1.25rem;">
@@ -5307,6 +5352,58 @@ function todaysGamesPanel(parts, repickMode){
     </div>
     ${rows.join('')}
   </div>`;
+}
+
+// Popup launched from a "today's games" pick summary: every player's avatar in a
+// circle coloured by who they picked, laid left→right by predicted margin (a big
+// home/left win is far left, draws centre, a big away/right win far right).
+function _closePicksPopup(){ const el=document.getElementById('picks-popup'); if(el) el.remove(); }
+function showPicksPopup(kind, gid, repickMode){
+  let homeT, awayT, rows=[];
+  if(kind==='group'){
+    const g=GROUP_GAMES.find(x=>x.id===gid); if(!g) return;
+    homeT=g.home; awayT=g.away;
+    const ppl=[{name:S.name+' (you)', gp:S.gPreds}, ...(picksVisible()?S.otherUsers.map(u=>({name:u.name, gp:u.gPreds||{}})):[])];
+    for(const p of ppl){ const pr=p.gp&&p.gp[gid]; if(!pr) continue; const m=pr[0]-pr[1]; rows.push({name:p.name, side:m>0?'h':m<0?'a':'d', margin:m, label:`${pr[0]}–${pr[1]}`}); }
+  } else {
+    const a=S.kResults[gid]; const at=(a&&a.home)?a:(_actualKoTeams()[gid]||{});
+    homeT=at.home||'TBD'; awayT=at.away||'TBD';
+    const slot=repickMode&&gid==='final'?'final-1':gid;
+    const src = repickMode
+      ? Object.entries(S.allRePicks||{}).map(([name,picks])=>({name, kp:picks}))
+      : [{name:S.name+' (you)', kp:S.kPreds}, ...(picksVisible()?S.otherUsers.map(u=>({name:u.name, kp:u.kPreds||{}})):[])];
+    for(const p of src){ const mp=_userKoPickForActual(slot, homeT, awayT, p.kp); if(!mp) continue; const m=mp.hs-mp.as; rows.push({name:p.name, side:m>0?'h':m<0?'a':'d', margin:m, label:`${mp.hs}–${mp.as}`}); }
+  }
+  rows.sort((x,y)=> y.margin-x.margin || x.name.localeCompare(y.name));   // home/left wins → away/right wins
+  const col={h:'#60a5fa',d:'#94a3b8',a:'#fb923c'};
+  const av=r=>{
+    const src=_entryAvatar(r.name), ring=col[r.side];
+    const inner = src
+      ? `<img src="${src}" style="width:38px;height:38px;border-radius:50%;object-fit:cover;display:block;">`
+      : `<span style="width:38px;height:38px;border-radius:50%;background:rgba(255,255,255,0.1);display:flex;align-items:center;justify-content:center;font-size:0.68rem;font-weight:700;color:#cbd5e1;">${esc(abbrevName(r.name))}</span>`;
+    return `<div style="display:flex;flex-direction:column;align-items:center;gap:0.2rem;width:54px;">
+      <div style="padding:3px;border-radius:50%;background:${ring};box-shadow:0 2px 8px rgba(0,0,0,0.5);">${inner}</div>
+      <span style="font-size:0.62rem;color:#cbd5e1;font-family:monospace;">${r.label}</span>
+      <span style="font-size:0.56rem;color:#64748b;max-width:54px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(r.name.replace(/\s*\(you\)\s*$/i,''))}</span>
+    </div>`;
+  };
+  _closePicksPopup();
+  const body = rows.length
+    ? `<div style="display:flex;flex-wrap:wrap;gap:0.6rem;align-items:flex-start;justify-content:center;">${rows.map(av).join('')}</div>`
+    : `<div style="color:#64748b;text-align:center;padding:1.5rem;">No picks for this game yet.</div>`;
+  const html = `<div id="picks-popup" onclick="if(event.target===this)_closePicksPopup()" style="position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;padding:1rem;">
+    <div style="background:#0d1f35;border:1px solid rgba(255,255,255,0.12);border-radius:1rem;max-width:42rem;width:100%;max-height:85vh;overflow:auto;padding:1.25rem;box-shadow:0 12px 40px rgba(0,0,0,0.5);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;gap:0.5rem;">
+        <div style="font-weight:700;color:white;font-size:0.95rem;">${flag(homeT)} ${esc(shortTeamName(homeT))} v ${esc(shortTeamName(awayT))} ${flag(awayT)}${repickMode?' · repick':''}</div>
+        <button onclick="_closePicksPopup()" style="background:none;border:none;color:#94a3b8;font-size:1.2rem;cursor:pointer;line-height:1;">✕</button>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:0.68rem;margin-bottom:0.75rem;">
+        <span style="color:#60a5fa;">◀ ${esc(shortTeamName(homeT))} wins</span><span style="color:#94a3b8;">draw</span><span style="color:#fb923c;">${esc(shortTeamName(awayT))} wins ▶</span>
+      </div>
+      ${body}
+    </div>
+  </div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
 }
 
 function renderCompare(){
@@ -5613,7 +5710,7 @@ function renderCompare(){
   const repickParts = Object.entries(S.allRePicks||{}).map(([name,picks])=>({name, kPreds:picks}));
   const repickTodayHTML = todaysGamesPanel(repickParts, true);   // today's KO games, repick picks
   const repickBody = `${repickTodayHTML}${reLbAll.length>0
-    ? `${repickPodiumHTML}${reSectionHTML}`
+    ? `${repickPodiumHTML}${reSectionHTML}${repickerResultsGrid()}`
     : `<div style="text-align:center;padding:2.5rem;color:#64748b;background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;">🔄 Repicker standings appear once the knockouts begin and players' brackets are scored.</div>`}`;
 
   return `
