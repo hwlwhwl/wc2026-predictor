@@ -2916,8 +2916,9 @@ function repickerResultsGrid(){
     return `<td style="${base}background:${bg};">${dh}–${da}${badge}</td>`;
   };
   const gameCell=actual=>{
-    const pen=(actual.homeScore===actual.awayScore&&actual.penWinner)?` <span style="color:#94a3b8;font-size:0.58rem;">pens ${esc(shortTeamName(actual.penWinner))}</span>`:'';
-    return `<td style="${TD}font-size:0.78rem;white-space:nowrap;"><span style="color:white;">${esc(shortTeamName(actual.home))}</span> <span style="color:#475569;">v</span> <span style="color:white;">${esc(shortTeamName(actual.away))}</span> <span style="color:#fcd34d;font-family:monospace;font-weight:800;margin-left:0.25rem;">${actual.homeScore}–${actual.awayScore}</span>${pen}</td>`;
+    const havePens=actual.homeScore===actual.awayScore&&actual.penHome!=null&&actual.penAway!=null;
+    const pen=(actual.homeScore===actual.awayScore&&actual.penWinner&&!havePens)?` <span style="color:#94a3b8;font-size:0.58rem;">pens ${esc(shortTeamName(actual.penWinner))}</span>`:'';
+    return `<td style="${TD}font-size:0.78rem;white-space:nowrap;"><span style="color:white;">${esc(shortTeamName(actual.home))}</span> <span style="color:#475569;">v</span> <span style="color:white;">${esc(shortTeamName(actual.away))}</span> <span style="color:#fcd34d;font-family:monospace;font-weight:800;margin-left:0.25rem;">${fmtKoScore(actual.homeScore,actual.awayScore,actual.penHome,actual.penAway)}</span>${pen}</td>`;
   };
   let body='', last='';
   for(const id of entered){
@@ -3493,10 +3494,11 @@ async function adminDelGResult(gameId){
   const res = await fetch(`/api/results/group/${gameId}`, {method:'DELETE', headers:_authHeaders()});
   if(!res.ok){ const d=await res.json(); throw new Error(d.error||'Failed'); }
 }
-async function adminSetKOResult(matchId, home, away, homeScore, awayScore, penWinner){
+async function adminSetKOResult(matchId, home, away, homeScore, awayScore, penWinner, penHome, penAway){
   const res = await fetch(`/api/results/ko/${encodeURIComponent(matchId)}`, {
     method:'PUT', headers:_authHeaders(),
-    body:JSON.stringify({home, away, homeScore, awayScore, penWinner:penWinner||null})
+    body:JSON.stringify({home, away, homeScore, awayScore, penWinner:penWinner||null,
+      penHome: penHome!=null?penHome:null, penAway: penAway!=null?penAway:null})
   });
   if(!res.ok){ const d=await res.json(); throw new Error(d.error||'Failed'); }
 }
@@ -5043,8 +5045,9 @@ function renderResults(){
     const aHS=actual.homeScore, aAS=actual.awayScore;
     let scoreStr='';
     if(aHS!=null && aAS!=null){
-      scoreStr = `<span style="color:#fcd34d;font-family:monospace;font-weight:800;">${aHS}–${aAS}</span>`;
-      scoreStr += (aHS===aAS && actual.penWinner)
+      const havePens = aHS===aAS && actual.penHome!=null && actual.penAway!=null;
+      scoreStr = `<span style="color:#fcd34d;font-family:monospace;font-weight:800;">${fmtKoScore(aHS,aAS,actual.penHome,actual.penAway)}</span>`;
+      scoreStr += (aHS===aAS && actual.penWinner && !havePens)
         ? `<span style="color:#94a3b8;font-size:0.6rem;margin-left:0.25rem;">pens: ${esc(shortTeamName(actual.penWinner))}</span>`
         : `<span style="color:#475569;font-size:0.6rem;margin-left:0.2rem;">FT</span>`;
     }
@@ -5302,6 +5305,14 @@ function _actualKoTeams(){
   [...r16,...qf,...sf,...fin].forEach(g=>{ map[g.id]={home:g.home,away:g.away}; });
   return map;
 }
+// Knockout score string: "1 (4p)–1 (3p)" when a draw was decided on penalties
+// and the shootout scores are known, otherwise "2–1".
+function fmtKoScore(hs, as_, penHome, penAway){
+  if(hs==null || as_==null) return '';
+  return (hs===as_ && penHome!=null && penAway!=null)
+    ? `${hs} (${penHome}p)–${as_} (${penAway}p)`
+    : `${hs}–${as_}`;
+}
 // Compact "today's games" strip for the leaderboard (group + knockout): the
 // live/final/upcoming score plus the high-level pick split, result underlined.
 // repickMode: show only knockout games and source the viewer's pick + crowd
@@ -5346,8 +5357,11 @@ function todaysGamesPanel(parts, repickMode){
     if(live && live.home){ homeT=live.home; awayT=live.away; mid=`<span style="color:#f87171;font-family:monospace;font-weight:800;">${live.hs}–${live.as}</span>${_liveClock(e.iso, live.detail, true, '0.56rem')}`; actResult=live.hs>live.as?'h':live.hs<live.as?'a':'d'; }
     else if(done && done.home && done.homeScore!=null){
       homeT=done.home; awayT=done.away;
-      const pen=(done.homeScore===done.awayScore && done.penWinner)?` <span style="color:#94a3b8;font-size:0.56rem;">pens ${esc(shortTeamName(done.penWinner))}</span>`:` <span style="color:#475569;font-size:0.56rem;">FT</span>`;
-      mid=`<span style="color:#fcd34d;font-family:monospace;font-weight:800;">${done.homeScore}–${done.awayScore}</span>${pen}`;
+      // Penalty scores shown inline as "1 (4p)–1 (3p)"; fall back to "pens: Winner"
+      // for older results where the shootout scores weren't captured.
+      const havePens = done.homeScore===done.awayScore && done.penHome!=null && done.penAway!=null;
+      const pen=(done.homeScore===done.awayScore && done.penWinner && !havePens)?` <span style="color:#94a3b8;font-size:0.56rem;">pens ${esc(shortTeamName(done.penWinner))}</span>`:` <span style="color:#475569;font-size:0.56rem;">FT</span>`;
+      mid=`<span style="color:#fcd34d;font-family:monospace;font-weight:800;">${fmtKoScore(done.homeScore,done.awayScore,done.penHome,done.penAway)}</span>${pen}`;
       actResult = done.homeScore>done.awayScore?'h':done.homeScore<done.awayScore?'a':'d';
     } else { const t=e.actualKo[slot]||{}; homeT=t.home||'TBD'; awayT=t.away||'TBD'; mid=`<span style="color:#475569;font-size:0.72rem;">${esc(fmtKickoffTime(e.iso))}</span>`; }
     // The viewer's pick for THIS matchup, oriented to the displayed home/away.
@@ -6223,6 +6237,8 @@ function renderAdminKoEntry(){
     const hs = r.homeScore!=null ? r.homeScore : '';
     const as_ = r.awayScore!=null ? r.awayScore : '';
     const pen = r.penWinner || '';
+    const penH = r.penHome!=null ? r.penHome : '';
+    const penA = r.penAway!=null ? r.penAway : '';
     const has = !!(r.home && r.away && r.homeScore!=null && r.awayScore!=null);
     if(has) entered++;
     const rl = roundLabel(id);
@@ -6241,8 +6257,11 @@ function renderAdminKoEntry(){
           <input list="ko-teams" id="ko-a-${id}" value="${esc(a)}" placeholder="Away team" style="${tIn}" />
         </div>
         <div style="display:flex;align-items:center;gap:0.4rem;margin-top:0.4rem;flex-wrap:wrap;">
-          <span style="font-size:0.64rem;color:#64748b;">Pen winner (only if drawn):</span>
-          <input list="ko-teams" id="ko-pen-${id}" value="${esc(pen)}" placeholder="—" style="${tIn}max-width:9rem;flex:0 0 auto;" />
+          <span style="font-size:0.64rem;color:#64748b;">Pens (only if drawn):</span>
+          <input class="score-in" type="number" min="0" max="50" id="ko-penh-${id}" value="${penH}" placeholder="p" style="width:2.6rem;" title="Home shootout score" />
+          <span style="color:#475569;font-weight:700;">–</span>
+          <input class="score-in" type="number" min="0" max="50" id="ko-pena-${id}" value="${penA}" placeholder="p" style="width:2.6rem;" title="Away shootout score" />
+          <input list="ko-teams" id="ko-pen-${id}" value="${esc(pen)}" placeholder="pen winner" style="${tIn}max-width:8rem;flex:0 0 auto;" />
           <span style="margin-left:auto;display:flex;gap:0.3rem;">
             ${has?`<button onclick="delKoResult('${id}')" style="font-size:0.7rem;color:#f87171;background:rgba(153,27,27,0.18);border:1px solid rgba(153,27,27,0.3);border-radius:0.35rem;padding:0.3rem 0.6rem;cursor:pointer;">Remove</button>`:''}
             <button onclick="saveKoResult('${id}')" style="font-size:0.7rem;background:#15803d;color:white;border:none;border-radius:0.35rem;padding:0.3rem 0.75rem;cursor:pointer;font-weight:500;">Save</button>
@@ -6270,20 +6289,27 @@ async function saveKoResult(id){
   const hsRaw = document.getElementById('ko-hs-'+id)?.value;
   const asRaw = document.getElementById('ko-as-'+id)?.value;
   const pen = document.getElementById('ko-pen-'+id)?.value?.trim()||'';
+  const penHRaw = document.getElementById('ko-penh-'+id)?.value;
+  const penARaw = document.getElementById('ko-pena-'+id)?.value;
   if(!home || !away){ alert('Enter both teams.'); return; }
   if(hsRaw==='' || asRaw===''){ alert('Enter both scores.'); return; }
   const hs = parseInt(hsRaw,10), as_ = parseInt(asRaw,10);
   if(!Number.isFinite(hs) || !Number.isFinite(as_)){ alert('Invalid scores.'); return; }
-  let penWinner = null;
+  let penHome=null, penAway=null, penWinner=null;
   if(hs===as_){
-    if(!pen){ alert('Draw — set the penalty winner (one of the two teams).'); return; }
-    if(pen!==home && pen!==away){ alert('Penalty winner must be exactly one of the two teams.'); return; }
-    penWinner = pen;
+    if(penHRaw!=='' && penHRaw!=null) penHome=parseInt(penHRaw,10);
+    if(penARaw!=='' && penARaw!=null) penAway=parseInt(penARaw,10);
+    if(penHome!=null && penAway!=null && penHome!==penAway){
+      penWinner = pen || (penHome>penAway ? home : away);   // derive from shootout, allow override
+    } else if(pen){ penWinner = pen; }
+    if(!penWinner){ alert('Draw — enter the shootout scores (e.g. 4 – 3) or the penalty winner.'); return; }
+    if(penWinner!==home && penWinner!==away){ alert('Penalty winner must be exactly one of the two teams.'); return; }
   }
   try{
-    await adminSetKOResult(id, home, away, hs, as_, penWinner);
+    await adminSetKOResult(id, home, away, hs, as_, penWinner, penHome, penAway);
     if(!S.kResults) S.kResults={};
-    S.kResults[id] = {home, away, homeScore:hs, awayScore:as_, penWinner:penWinner||''};
+    S.kResults[id] = {home, away, homeScore:hs, awayScore:as_, penWinner:penWinner||'',
+      penHome: penHome!=null?penHome:undefined, penAway: penAway!=null?penAway:undefined};
     render();
   }catch(e){ alert('Save failed: '+e.message); }
 }

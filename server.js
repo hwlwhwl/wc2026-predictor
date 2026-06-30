@@ -112,6 +112,8 @@ async function initDB() {
       home_score INTEGER,
       away_score INTEGER,
       pen_winner TEXT,
+      pen_home   INTEGER,
+      pen_away   INTEGER,
       source     TEXT    NOT NULL DEFAULT 'manual',
       updated_at TEXT    NOT NULL DEFAULT (datetime('now'))
     )`, args: [] },
@@ -162,6 +164,8 @@ async function initDB() {
     'ALTER TABLE ko_predictions ADD COLUMN pen_away INTEGER',
     'ALTER TABLE ko_results ADD COLUMN home TEXT',
     'ALTER TABLE ko_results ADD COLUMN away TEXT',
+    'ALTER TABLE ko_results ADD COLUMN pen_home INTEGER',
+    'ALTER TABLE ko_results ADD COLUMN pen_away INTEGER',
     'ALTER TABLE re_picks ADD COLUMN home TEXT',
     'ALTER TABLE re_picks ADD COLUMN away TEXT',
     'ALTER TABLE re_picks ADD COLUMN home_score INTEGER',
@@ -460,6 +464,8 @@ async function buildStatePayload() {
     kResults[row.match_id] = {
       home: row.home || '', away: row.away || '',
       homeScore: row.home_score, awayScore: row.away_score, penWinner: row.pen_winner || '',
+      penHome: row.pen_home != null ? row.pen_home : undefined,
+      penAway: row.pen_away != null ? row.pen_away : undefined,
     };
   }
 
@@ -690,40 +696,43 @@ async function pollESPN() {
       if (!koId) continue;
 
       // Don't overwrite a result an admin entered manually.
-      const exKo = await dbGet('SELECT home, away, home_score, away_score, pen_winner, source FROM ko_results WHERE match_id = ?', [koId]);
+      const exKo = await dbGet('SELECT home, away, home_score, away_score, pen_winner, pen_home, pen_away, source FROM ko_results WHERE match_id = ?', [koId]);
       if (exKo && exKo.source === 'manual') continue;
 
-      // Penalty winner: KO draws (incl. after extra time) are decided on penalties.
-      let penWinner = null;
+      // Penalty winner + shootout scores: KO draws (incl. after extra time) are
+      // decided on penalties. ESPN exposes each side's shootoutScore.
+      let penWinner = null, penHome = null, penAway = null;
       if (homeScore === awayScore) {
+        const hSO = parseInt(homeComp.shootoutScore ?? '-1', 10);
+        const aSO = parseInt(awayComp.shootoutScore ?? '-1', 10);
+        if (hSO >= 0 && aSO >= 0) { penHome = hSO; penAway = aSO; }
         if (homeComp.winner === true) penWinner = homeName;
         else if (awayComp.winner === true) penWinner = awayName;
-        else {
-          const hSO = parseInt(homeComp.shootoutScore ?? '-1', 10);
-          const aSO = parseInt(awayComp.shootoutScore ?? '-1', 10);
-          if (hSO >= 0 && aSO >= 0 && hSO !== aSO) penWinner = hSO > aSO ? homeName : awayName;
-        }
+        else if (penHome != null && penAway != null && penHome !== penAway) penWinner = penHome > penAway ? homeName : awayName;
         if (!penWinner) continue; // drawn but winner not yet resolvable — wait for next poll
       }
 
       const koChanged = !exKo || exKo.home !== homeName || exKo.away !== awayName ||
                         exKo.home_score !== homeScore || exKo.away_score !== awayScore ||
-                        (exKo.pen_winner || null) !== penWinner;
+                        (exKo.pen_winner || null) !== penWinner ||
+                        (exKo.pen_home ?? null) !== penHome || (exKo.pen_away ?? null) !== penAway;
       if (koChanged) {
         await dbRun(
-          `INSERT INTO ko_results (match_id, home, away, home_score, away_score, pen_winner, source, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+          `INSERT INTO ko_results (match_id, home, away, home_score, away_score, pen_winner, pen_home, pen_away, source, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
            ON CONFLICT(match_id) DO UPDATE SET
              home       = excluded.home,
              away       = excluded.away,
              home_score = excluded.home_score,
              away_score = excluded.away_score,
              pen_winner = excluded.pen_winner,
+             pen_home   = excluded.pen_home,
+             pen_away   = excluded.pen_away,
              source     = excluded.source,
              updated_at = excluded.updated_at`,
-          [koId, homeName, awayName, homeScore, awayScore, penWinner, 'espn']
+          [koId, homeName, awayName, homeScore, awayScore, penWinner, penHome, penAway, 'espn']
         );
-        console.log(`ESPN: KO ${koId} (${homeName} v ${awayName}) → ${homeScore}–${awayScore}${penWinner ? ` (pens: ${penWinner})` : ''}`);
+        console.log(`ESPN: KO ${koId} (${homeName} v ${awayName}) → ${homeScore}–${awayScore}${penWinner ? ` (pens ${penHome ?? '?'}-${penAway ?? '?'}: ${penWinner})` : ''}`);
         changed = true;
       }
     }
@@ -999,23 +1008,28 @@ app.delete('/api/results/group/:gameId', requireAdmin, asyncHandler(async (req, 
 // PUT /api/results/ko/:matchId — manually set a KO result (admin)
 app.put('/api/results/ko/:matchId', requireAdmin, asyncHandler(async (req, res) => {
   const { matchId } = req.params;
-  const { home, away, homeScore, awayScore, penWinner } = req.body;
+  const { home, away, homeScore, awayScore, penWinner, penHome, penAway } = req.body;
   const h = homeScore != null ? parseInt(homeScore, 10) : null;
   const a = awayScore != null ? parseInt(awayScore, 10) : null;
+  const clampPen = v => { if (v == null) return null; const n = parseInt(v, 10); return (Number.isFinite(n) && n >= 0 && n <= 50) ? n : null; };
+  const ph = clampPen(penHome);
+  const pa = clampPen(penAway);
   const homeTeam = typeof home === 'string' && home.trim() ? home.trim().slice(0, 40) : null;
   const awayTeam = typeof away === 'string' && away.trim() ? away.trim().slice(0, 40) : null;
   await dbRun(
-    `INSERT INTO ko_results (match_id, home, away, home_score, away_score, pen_winner, source, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `INSERT INTO ko_results (match_id, home, away, home_score, away_score, pen_winner, pen_home, pen_away, source, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(match_id) DO UPDATE SET
        home       = excluded.home,
        away       = excluded.away,
        home_score = excluded.home_score,
        away_score = excluded.away_score,
        pen_winner = excluded.pen_winner,
+       pen_home   = excluded.pen_home,
+       pen_away   = excluded.pen_away,
        source     = excluded.source,
        updated_at = excluded.updated_at`,
-    [matchId, homeTeam, awayTeam, h, a, penWinner || null, 'manual']
+    [matchId, homeTeam, awayTeam, h, a, penWinner || null, ph, pa, 'manual']
   );
   scheduleBroadcast();
   res.json({ ok: true });
