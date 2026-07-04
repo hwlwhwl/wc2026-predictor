@@ -7590,9 +7590,10 @@ function reScoreCell(matchId, side, val, locked, isPen){
   const gfmid=(isPen?'re-pen-':'re-')+matchId;
   const oninput=isPen?`setRePenScore('${matchId}','${side}',this.value)`:`inputRe('${matchId}','${side}',this)`;
   const adj=isPen?`adj_repen('${matchId}','${side}',DELTA)`:`adj_re('${matchId}','${side}',DELTA)`;
+  const onblur=isPen?'':` onblur="reScoreBlur('${matchId}')"`;   // fill the other side with 0 when you leave the game
   return `<div class="goal-cell">
     <div class="goal-frame" data-gf-mid="${gfmid}" data-gf-side="${side}">
-      <input class="goal-input" type="number" min="0" max="20" value="${v}" data-mid="${gfmid}" data-side="${side}" oninput="${oninput}" />
+      <input class="goal-input" type="number" min="0" max="20" value="${v}" data-mid="${gfmid}" data-side="${side}" oninput="${oninput}"${onblur} />
     </div>
     <div class="goal-btns">
       <button class="goal-btn" onclick="${adj.replace('DELTA','-1')}">−</button>
@@ -7741,27 +7742,42 @@ function _reDrawState(rp){
 function setReScore(mid, side, val){
   const rp=_reEnsure(mid);
   const wasDraw=_reDrawState(rp);
+  // Store only the side being typed — the opposite side is NOT auto-filled here;
+  // reScoreBlur() fills it with 0 once you leave this game, so nothing changes
+  // under your cursor while you type.
   const v=val===''?undefined:Math.max(0,Math.min(20,parseInt(val)||0));
-  if(side==='h') rp.homeScore=v!=null?v:0; else rp.awayScore=v!=null?v:0;
-  // Default the unset side to 0 so one score resolves the match (mirrors the
-  // main KO page); reflect it in the DOM without a full re-render.
-  if(rp.homeScore!==undefined && rp.awayScore===undefined) rp.awayScore=0;
-  if(rp.awayScore!==undefined && rp.homeScore===undefined) rp.homeScore=0;
-  if(rp.homeScore!==undefined && rp.awayScore!==undefined && rp.homeScore!==rp.awayScore){ rp.penHome=undefined; rp.penAway=undefined; rp.penWinner=''; }
+  if(side==='h') rp.homeScore=v; else rp.awayScore=v;
+  if(rp.homeScore!=null && rp.awayScore!=null && rp.homeScore!==rp.awayScore){ rp.penHome=undefined; rp.penAway=undefined; rp.penWinner=''; }
   _reDirty.add(mid); persistRe();
-  const otherSide=side==='h'?'a':'h';
-  const otherInp=document.querySelector(`input[data-mid="re-${mid}"][data-side="${otherSide}"]`);
-  if(otherInp && otherInp.value==='') otherInp.value = side==='h' ? rp.awayScore : rp.homeScore;
-  // Show/hide the penalty block for THIS card only — no full re-render — so the
-  // rest of the page (and the input you're in) stays perfectly stable.
+  _reTogglePen(mid, wasDraw);
+}
+// Show/hide the penalty block for one card via a targeted DOM change (no full
+// re-render), so the input you're in and the rest of the page stay put.
+function _reTogglePen(mid, wasDraw){
+  const rp=S.rePicks[mid]; if(!rp) return;
   const nowDraw=_reDrawState(rp);
-  if(nowDraw!==wasDraw){
-    const wrap=document.getElementById('re-pen-wrap-'+mid);
-    if(wrap){
-      wrap.style.display = nowDraw?'block':'none';
-      if(!nowDraw){ ['h','a'].forEach(s=>{ const pi=document.querySelector(`input[data-mid="re-pen-${mid}"][data-side="${s}"]`); if(pi) pi.value=''; }); }
-    } else { render(); }   // card not on screen (rare) — fall back to a full render
-  }
+  if(nowDraw===wasDraw) return;
+  const wrap=document.getElementById('re-pen-wrap-'+mid);
+  if(!wrap){ render(); return; }             // card not on screen (rare) — full render
+  wrap.style.display = nowDraw?'block':'none';
+  if(!nowDraw){ ['h','a'].forEach(s=>{ const pi=document.querySelector(`input[data-mid="re-pen-${mid}"][data-side="${s}"]`); if(pi) pi.value=''; }); }
+}
+// When focus leaves a game (moving to the next one), default the untouched side
+// to 0 so a single score still resolves the match — without disturbing entry.
+function reScoreBlur(mid){
+  setTimeout(()=>{
+    const rp=S.rePicks[mid]; if(!rp) return;
+    const ae=document.activeElement;
+    if(ae && ae.dataset && ae.dataset.mid==='re-'+mid) return;   // still editing this game
+    const wasDraw=_reDrawState(rp);
+    let changed=false;
+    if(rp.homeScore!=null && rp.awayScore==null){ rp.awayScore=0; changed=true; }
+    else if(rp.awayScore!=null && rp.homeScore==null){ rp.homeScore=0; changed=true; }
+    if(!changed) return;
+    ['h','a'].forEach(s=>{ const inp=document.querySelector(`input[data-mid="re-${mid}"][data-side="${s}"]`); if(inp && inp.value==='') inp.value = s==='h'?rp.homeScore:rp.awayScore; });
+    _reDirty.add(mid); persistRe();
+    _reTogglePen(mid, wasDraw);
+  }, 0);
 }
 function adj_re(mid, side, delta){
   const inp=document.querySelector(`input[data-mid="re-${mid}"][data-side="${side}"]`);
@@ -7775,9 +7791,17 @@ function setRePenScore(mid, side, val){
   const rp=_reEnsure(mid);
   const v=val===''?undefined:Math.max(0,Math.min(20,parseInt(val)||0));
   if(side==='h') rp.penHome=v; else rp.penAway=v;
-  const {valid}=_penIsValid(rp.penHome, rp.penAway);
+  const {valid,msg}=_penIsValid(rp.penHome, rp.penAway);
   rp.penWinner = valid ? (rp.penHome>rp.penAway?rp.home:rp.away) : '';
   _reDirty.add(mid); persistRe();   // no render — keeps the pen inputs stable while typing
+  // Warn (in place) when both pen scores are in but can't decide a winner
+  // (e.g. even, or an invalid sudden-death margin).
+  const warnEl=document.getElementById('re-pen-warn-'+mid);
+  if(warnEl){
+    const show = rp.penHome!=null && rp.penAway!=null && !valid && msg;
+    warnEl.textContent = show ? msg : '';
+    warnEl.style.display = show ? 'block' : 'none';
+  }
 }
 function adj_repen(mid, side, delta){
   const inp=document.querySelector(`input[data-mid="re-pen-${mid}"][data-side="${side}"]`);
@@ -7952,6 +7976,8 @@ function renderRepicker(){
     // Always render the pen block when both teams are known, but keep it hidden
     // unless the score is a draw. setReScore toggles visibility with a targeted
     // DOM change (no full re-render), so it no longer flickers in and out.
+    const penChk = (penH!=='' && penA!=='') ? _penIsValid(Number(penH), Number(penA)) : {valid:true,msg:''};
+    const penWarnShow = !penChk.valid && penChk.msg;
     const penSection = bothKnown ? `
       <div id="re-pen-wrap-${id}" style="display:${isDraw?'block':'none'};margin-top:0.6rem;padding-top:0.5rem;border-top:1px solid rgba(255,255,255,0.06);">
         <div style="font-size:0.72rem;color:#fbbf24;margin-bottom:0.4rem;text-align:center;">🎯 Penalty shootout — goals scored</div>
@@ -7962,6 +7988,7 @@ function renderRepicker(){
           ${reScoreCell(id,'a',penA,gLocked,true)}
           <div style="flex:1;text-align:left;font-size:0.78rem;color:#94a3b8;">${teamSpan(away,true)}</div>
         </div>
+        <div id="re-pen-warn-${id}" style="text-align:center;font-size:0.64rem;color:#f87171;margin-top:0.35rem;${penWarnShow?'':'display:none;'}">${penWarnShow?esc(penChk.msg):''}</div>
       </div>` : '';
 
     const oneSideNote = !bothKnown
