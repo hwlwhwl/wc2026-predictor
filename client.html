@@ -7752,11 +7752,16 @@ function setReScore(mid, side, val){
   const otherSide=side==='h'?'a':'h';
   const otherInp=document.querySelector(`input[data-mid="re-${mid}"][data-side="${otherSide}"]`);
   if(otherInp && otherInp.value==='') otherInp.value = side==='h' ? rp.awayScore : rp.homeScore;
-  // Only re-render when the penalty-shootout section needs to appear/disappear.
-  // For decisive scores the visible card is unchanged, so we skip the rebuild —
-  // this is what makes entry seamless from one game to the next. The downstream
-  // bracket on the other round tabs is recomputed when the user switches tabs.
-  if(_reDrawState(rp) !== wasDraw) render();
+  // Show/hide the penalty block for THIS card only — no full re-render — so the
+  // rest of the page (and the input you're in) stays perfectly stable.
+  const nowDraw=_reDrawState(rp);
+  if(nowDraw!==wasDraw){
+    const wrap=document.getElementById('re-pen-wrap-'+mid);
+    if(wrap){
+      wrap.style.display = nowDraw?'block':'none';
+      if(!nowDraw){ ['h','a'].forEach(s=>{ const pi=document.querySelector(`input[data-mid="re-pen-${mid}"][data-side="${s}"]`); if(pi) pi.value=''; }); }
+    } else { render(); }   // card not on screen (rare) — fall back to a full render
+  }
 }
 function adj_re(mid, side, delta){
   const inp=document.querySelector(`input[data-mid="re-${mid}"][data-side="${side}"]`);
@@ -7772,12 +7777,15 @@ function setRePenScore(mid, side, val){
   if(side==='h') rp.penHome=v; else rp.penAway=v;
   const {valid}=_penIsValid(rp.penHome, rp.penAway);
   rp.penWinner = valid ? (rp.penHome>rp.penAway?rp.home:rp.away) : '';
-  _reDirty.add(mid); persistRe(); render();
+  _reDirty.add(mid); persistRe();   // no render — keeps the pen inputs stable while typing
 }
 function adj_repen(mid, side, delta){
+  const inp=document.querySelector(`input[data-mid="re-pen-${mid}"][data-side="${side}"]`);
   const rp=_reEnsure(mid);
   const cur=side==='h'?(rp.penHome??0):(rp.penAway??0);
-  setRePenScore(mid, side, String(Math.max(0,cur+delta)));
+  const nv=Math.max(0,cur+delta);
+  if(inp) inp.value=nv;             // update the field directly so no render is needed
+  setRePenScore(mid, side, String(nv));
 }
 
 async function setRepickerOverride(mode){
@@ -7941,8 +7949,11 @@ function renderRepicker(){
       ? `<div style="text-align:center;font-size:0.66rem;color:#64748b;margin-top:0.45rem;">Actual: ${esc(shortTeamName(ar.home))} ${ar.homeScore}–${ar.awayScore} ${esc(shortTeamName(ar.away))}${(ar.homeScore===ar.awayScore&&ar.penWinner)?` · pens ${esc(shortTeamName(ar.penWinner))}`:''}</div>`
       : '';
 
-    const penSection = isDraw ? `
-      <div style="margin-top:0.6rem;padding-top:0.5rem;border-top:1px solid rgba(255,255,255,0.06);">
+    // Always render the pen block when both teams are known, but keep it hidden
+    // unless the score is a draw. setReScore toggles visibility with a targeted
+    // DOM change (no full re-render), so it no longer flickers in and out.
+    const penSection = bothKnown ? `
+      <div id="re-pen-wrap-${id}" style="display:${isDraw?'block':'none'};margin-top:0.6rem;padding-top:0.5rem;border-top:1px solid rgba(255,255,255,0.06);">
         <div style="font-size:0.72rem;color:#fbbf24;margin-bottom:0.4rem;text-align:center;">🎯 Penalty shootout — goals scored</div>
         <div style="display:flex;align-items:center;gap:0.6rem;justify-content:center;">
           <div style="flex:1;text-align:right;font-size:0.78rem;color:#94a3b8;">${teamSpan(home)}</div>
