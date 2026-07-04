@@ -2691,13 +2691,37 @@ function predictedR32Set(p){
   if(allGroupsFull) thirds.sort(cmpThird).slice(0,8).forEach(t=>set.add(t.name));
   return set;
 }
+// Actual KO pairings per slot from REAL data only: R32 from the actual
+// qualifiers once the group stage is complete; later rounds propagated from the
+// real advancers of their feeder games — so a matchup is "set" (and a team has
+// "reached" the round) the moment its feeder game is decided, before the round
+// itself is played. No prediction fallback anywhere.
+function actualKoBracket(){
+  const map={};
+  if(GROUP_GAMES.length>0 && GROUP_GAMES.every(g=>S.gResults[g.id])){
+    try{ const q=getQualifiers(); R32_FIXED.forEach(m=>{ map[m.id]={home:resolvePos(m.posA,q),away:resolvePos(m.posB,q)}; }); }catch(e){}
+  }
+  const realAdv=id=>{ const r=S.kResults[id]; return (r&&r.home&&r.away&&r.homeScore!=null)?koAdvancer(r.home,r.away,r.homeScore,r.awayScore,r.penWinner):null; };
+  const realLoser=id=>{ const r=S.kResults[id]; const w=realAdv(id); return w?(w===r.home?r.away:r.home):null; };
+  const r32Ids=R32_FIXED.map(m=>m.id);
+  [[11,13],[0,2],[1,6],[8,15],[7,4],[10,12],[5,3],[9,14]].forEach(([a,b],i)=>{ map[`r16-${i+1}`]={home:realAdv(r32Ids[a]),away:realAdv(r32Ids[b])}; });
+  [[0,1],[2,3],[4,5],[6,7]].forEach(([a,b],i)=>{ map[`qf-${i+1}`]={home:realAdv(`r16-${a+1}`),away:realAdv(`r16-${b+1}`)}; });
+  [['qf-1','qf-3'],['qf-2','qf-4']].forEach(([a,b],i)=>{ map[`sf-${i+1}`]={home:realAdv(a),away:realAdv(b)}; });
+  map['final']={home:realAdv('sf-1'),away:realAdv('sf-2')};
+  map['3rd']={home:realLoser('sf-1'),away:realLoser('sf-2')};
+  // A game's own entered result is authoritative for its teams.
+  for(const id of Object.keys(KO_VENUES)){ const r=S.kResults[id]; if(r&&r.home&&r.away) map[id]={home:r.home,away:r.away}; }
+  return map;
+}
 // Distinct teams actually in each round. R32 = the live qualifiers from real group
-// results (so it's meaningful before the knockouts start); R16+ from KO results.
+// results (so it's meaningful before the knockouts start); R16+ from the real
+// bracket propagation, so each R32 result immediately places its winner in R16.
 function koActualRoundTeams(){
   const out={r32:qualifierR32Set(actualGroupStandings),r16:new Set(),qf:new Set(),sf:new Set(),final:new Set()};
-  for(const id of Object.keys(KO_VENUES)){
-    const r=S.kResults[id]; if(!r||!r.home||!r.away) continue;
-    const rd=koRoundKey(id); if(rd!=='r32' && out[rd]){ out[rd].add(r.home); out[rd].add(r.away); }
+  const actual=actualKoBracket();
+  for(const [id,g] of Object.entries(actual)){
+    const rd=koRoundKey(id); if(rd==='r32'||!out[rd]) continue;
+    if(g.home) out[rd].add(g.home); if(g.away) out[rd].add(g.away);
   }
   return out;
 }
@@ -5472,13 +5496,9 @@ function renderCompare(){
   const W=getWeights(); const PK=koPts();
   const actualByRound=koActualRoundTeams(); const RTW=roundTeamWeight(); const RTC=roundTeamCurve();
   // Actual matchup teams per KO slot, from REAL data only (no predictions):
-  // R32 from the actual qualifiers once the group stage is fully decided; later
-  // rounds only once their game has a real result. Used for "matchups called right".
-  const actualKoTeams={};
-  if(completed.length===GROUP_GAMES.length){
-    try{ const aq=getQualifiers(); R32_FIXED.forEach(m=>{ actualKoTeams[m.id]={home:resolvePos(m.posA,aq), away:resolvePos(m.posB,aq)}; }); }catch(e){}
-  }
-  for(const id of Object.keys(KO_VENUES)){ if(id==='3rd') continue; const r=S.kResults[id]; if(r&&r.home&&r.away&&r.homeScore!=null) actualKoTeams[id]={home:r.home,away:r.away}; }
+  // R32 from the actual qualifiers; later rounds propagated from real feeder
+  // advancers, so a matchup counts as soon as both feeder games are decided.
+  const actualKoTeams=actualKoBracket();
   const lb=allPred.map(p=>{
     let groupTotal=0,exact=0,correct=0,scored=0,bad=0,surprise=0;
     for(const [gid,pr] of Object.entries(p.gPreds)){
