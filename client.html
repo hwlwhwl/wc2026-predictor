@@ -196,6 +196,12 @@
     .card-side { width:auto; border-left:none; border-top:1px solid var(--border-soft); padding-left:0; padding-top:0.625rem; }
   }
 
+  /* Leaderboard: break out of the 54rem page column and scale with the screen. */
+  .lb-bleed{
+    position:relative; left:50%; transform:translateX(-50%);
+    width:96vw; max-width:80rem; box-sizing:border-box;
+  }
+
   /* Theme toggle button */
   .theme-toggle {
     background:transparent; border:1px solid var(--border); color:var(--text-faint);
@@ -288,13 +294,18 @@
     padding-bottom: env(safe-area-inset-bottom, 0px);
     overflow-x: hidden; /* prevent any child from blowing out the width */
   }
-  /* Right-anchored panel on desktop, full width on mobile */
+  /* Right-anchored panel on desktop, full width on mobile. Width tracks the
+     screen (26vw) but stays a modest side panel, not a half-screen sheet. */
   @media (min-width: 768px) {
     #chat-drawer {
       left: auto !important;
-      width: clamp(340px, 40vw, 480px) !important;
+      right: 1rem !important;
+      width: clamp(300px, 26vw, 400px) !important;
+      max-height: min(70vh, 560px) !important;
       border-top-left-radius: 0.75rem;
+      border-top-right-radius: 0.75rem;
       border-left: 1px solid var(--border);
+      border-right: 1px solid var(--border);
     }
   }
 
@@ -3716,6 +3727,18 @@ function toggleChat(){
   }
 }
 
+// Close the chat when tapping/clicking anywhere outside it. pointerdown fires
+// before the click that opened it can re-toggle, so the FAB and mention toasts
+// are excluded to avoid a close-then-reopen flicker.
+document.addEventListener('pointerdown', e => {
+  if(!_chatOpen) return;
+  for(const id of ['chat-drawer','chat-fab','mention-toasts']){
+    const el=document.getElementById(id);
+    if(el && el.contains(e.target)) return;
+  }
+  toggleChat();
+});
+
 function _chatAvatar(name){
   if(name === S.name) return S.avatar;
   return S.otherUsers.find(u => u.name === name)?.avatar || '';
@@ -5428,7 +5451,15 @@ function showPicksPopup(kind, gid, repickMode){
     const src = repickMode
       ? Object.entries(S.allRePicks||{}).map(([name,picks])=>({name, kp:picks}))
       : [{name:S.name+' (you)', kp:S.kPreds}, ...(picksVisible()?S.otherUsers.map(u=>({name:u.name, kp:u.kPreds||{}})):[])];
-    for(const p of src){ const mp=_userKoPickForActual(slot, homeT, awayT, p.kp); if(!mp) continue; const m=mp.hs-mp.as; rows.push({name:p.name, side:m>0?'h':m<0?'a':'d', margin:m, label:`${mp.hs}–${mp.as}`}); }
+    for(const p of src){ const mp=_userKoPickForActual(slot, homeT, awayT, p.kp); if(!mp) continue; const m=mp.hs-mp.as;
+      // Draw pick: underline the score of the team they picked to win the shootout.
+      let label=`${mp.hs}–${mp.as}`;
+      if(m===0 && mp.pen){
+        const u=s=>`<u style="text-underline-offset:2px;text-decoration-color:#e2e8f0;">${s}</u>`;
+        if(mp.pen===homeT) label=`${u(mp.hs)}–${mp.as}`;
+        else if(mp.pen===awayT) label=`${mp.hs}–${u(mp.as)}`;
+      }
+      rows.push({name:p.name, side:m>0?'h':m<0?'a':'d', margin:m, label}); }
   }
   rows.sort((x,y)=> y.margin-x.margin || x.name.localeCompare(y.name));   // home/left wins → away/right wins
   const col={h:'#60a5fa',d:'#94a3b8',a:'#fb923c'};
@@ -5768,6 +5799,7 @@ function renderCompare(){
     : `<div style="text-align:center;padding:2.5rem;color:#64748b;background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;">🔄 Repicker standings appear once the knockouts begin and players' brackets are scored.</div>`}`;
 
   return `
+    <div class="lb-bleed">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:1.25rem;flex-wrap:wrap;gap:0.5rem;">
       <div>
         <h1 style="font-size:1.75rem;font-weight:700;color:white;margin-bottom:0.25rem;">Leaderboard</h1>
@@ -5885,6 +5917,7 @@ function renderCompare(){
     ${completed.length>0?`<h2 style="font-size:1.125rem;font-weight:700;color:white;margin-bottom:0.75rem;">Game breakdown</h2>${resultCards}`
       :`<div style="text-align:center;padding:2.5rem;color:#64748b;background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;">⏳ Game results appear here once entered in Admin.</div>`}
     `}
+    </div>
   `;
 }
 
