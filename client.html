@@ -5462,9 +5462,11 @@ function showPicksPopup(kind, gid, repickMode){
       : [{name:S.name+' (you)', kp:S.kPreds}, ...(picksVisible()?S.otherUsers.map(u=>({name:u.name, kp:u.kPreds||{}})):[])];
     for(const p of src){ const mp=_userKoPickForActual(slot, homeT, awayT, p.kp); if(!mp) continue; const m=mp.hs-mp.as;
       // Draw pick: underline the score of the team they picked to win the shootout.
+      // border-bottom + currentColor so it's clearly visible in both themes
+      // (text-decoration in a faint fixed color vanished in light mode).
       let label=`${mp.hs}–${mp.as}`;
       if(m===0 && mp.pen){
-        const u=s=>`<u style="text-underline-offset:2px;text-decoration-color:#e2e8f0;">${s}</u>`;
+        const u=s=>`<span style="border-bottom:2px solid currentColor;padding-bottom:1px;">${s}</span>`;
         if(mp.pen===homeT) label=`${u(mp.hs)}–${mp.as}`;
         else if(mp.pen===awayT) label=`${mp.hs}–${u(mp.as)}`;
       }
