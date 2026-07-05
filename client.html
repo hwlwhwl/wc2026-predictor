@@ -5332,10 +5332,19 @@ function _koResultDist(slot, homeT, awayT, parts){
 // the matchup elsewhere), so the shown score always matches the teams displayed.
 function _userKoPickForActual(slot, homeT, awayT, src){
   src = src || S.kPreds;
+  // Pen winner as a TEAM NAME, whatever shape the pick stored it in:
+  // a team name, legacy 'home'/'away', or only shootout scores (penHome/penAway).
+  const penTeam=kp=>{
+    let p=kp.penWinner;
+    if(p==='home') p=kp.home; else if(p==='away') p=kp.away;
+    if(!p && kp.penHome!=null && kp.penAway!=null && kp.penHome!==kp.penAway)
+      p = kp.penHome>kp.penAway ? kp.home : kp.away;
+    return (p===kp.home||p===kp.away) ? p : '';
+  };
   const tryKp=kp=>{
     if(!kp||kp.homeScore==null||kp.awayScore==null) return null;
-    if(kp.home===homeT&&kp.away===awayT) return {hs:kp.homeScore, as:kp.awayScore, pen:kp.penWinner||''};
-    if(kp.home===awayT&&kp.away===homeT) return {hs:kp.awayScore, as:kp.homeScore, pen:kp.penWinner||''};
+    if(kp.home===homeT&&kp.away===awayT) return {hs:kp.homeScore, as:kp.awayScore, pen:penTeam(kp)};
+    if(kp.home===awayT&&kp.away===homeT) return {hs:kp.awayScore, as:kp.homeScore, pen:penTeam(kp)};
     return null;
   };
   let r=tryKp(src[slot]); if(r) return r;
