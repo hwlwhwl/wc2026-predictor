@@ -5336,8 +5336,9 @@ function _koResultDist(slot, homeT, awayT, parts, slotFallback){
     if(kp.home===homeT&&kp.away===awayT){ hs=kp.homeScore; as_=kp.awayScore; }
     else if(kp.home===awayT&&kp.away===homeT){ hs=kp.awayScore; as_=kp.homeScore; }
     // Repicker slots are positionally aligned with the real bracket, so a pick
-    // whose stored team labels are stale/missing still counts as-stored.
-    else if(slotFallback){ hs=kp.homeScore; as_=kp.awayScore; }
+    // whose team labels are MISSING still counts as-stored. Labels naming a
+    // different matchup are a pick about other teams — not counted here.
+    else if(slotFallback && (!kp.home || !kp.away)){ hs=kp.homeScore; as_=kp.awayScore; }
     else continue;                                  // their slot teams aren't this matchup
     if(hs>as_)h++; else if(hs<as_)a++; else d++;
   }
@@ -5369,8 +5370,12 @@ function _userKoPickForActual(slot, homeT, awayT, src, slotFallback){
   let r=tryKp(src[slot]); if(r) return r;
   for(const k in src){ if(k===slot) continue; r=tryKp(src[k]); if(r) return r; }
   if(slotFallback){
+    // Positional read ONLY when the slot pick's team labels are incomplete —
+    // labels lost, but the scoreline is trustworthy. A pick that names a
+    // DIFFERENT matchup is a real pick about other teams (the results grid
+    // grades it ✗/½) and must not be presented as a pick on this game.
     const kp=src[slot];
-    if(kp && kp.homeScore!=null && kp.awayScore!=null){
+    if(kp && kp.homeScore!=null && kp.awayScore!=null && (!kp.home || !kp.away)){
       // Positional read: stored home side = actual home side. Normalize the pen
       // winner onto the ACTUAL team names so the popup underline still works.
       let pen=kp.penWinner||'';
