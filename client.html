@@ -5509,6 +5509,30 @@ function showPicksPopup(kind, gid, repickMode){
         else if(mp.pen===awayT) label=`${mp.hs}–${u(mp.as)}`;
       }
       rows.push({name:p.name, side:m>0?'h':m<0?'a':'d', margin:m, label}); }
+    // Half-matchup picks: they only had ONE of these teams in this slot. If they
+    // picked that team to advance, show an arrow pointing at its side; if they
+    // advanced their other team, they said nothing about this matchup — omit.
+    const seen=new Set(rows.map(r=>r.name));
+    const advOf=kp=>{
+      if(!kp||kp.homeScore==null||kp.awayScore==null) return null;
+      if(kp.homeScore>kp.awayScore) return kp.home;
+      if(kp.awayScore>kp.homeScore) return kp.away;
+      let pen=kp.penWinner;
+      if(pen==='home') pen=kp.home; else if(pen==='away') pen=kp.away;
+      if(!pen && kp.penHome!=null && kp.penAway!=null && kp.penHome!==kp.penAway)
+        pen = kp.penHome>kp.penAway ? kp.home : kp.away;
+      return (pen && (pen===kp.home||pen===kp.away)) ? pen : null;
+    };
+    for(const p of src){
+      if(seen.has(p.name)) continue;
+      const kp=p.kp && p.kp[slot]; if(!kp) continue;
+      const inter=[kp.home,kp.away].filter(t=>t && (t===homeT||t===awayT));
+      if(inter.length!==1 || advOf(kp)!==inter[0]) continue;
+      const side = inter[0]===homeT ? 'h' : 'a';
+      const tip = `Had ${esc(shortTeamName(inter[0]))} in this slot and picked them to advance`;
+      rows.push({name:p.name, side, margin: side==='h'?0.5:-0.5,
+        label: `<span title="${tip}" style="color:${side==='h'?'#60a5fa':'#fb923c'};font-weight:800;">${side==='h'?'◀':'▶'}</span>`});
+    }
   }
   rows.sort((x,y)=> y.margin-x.margin || x.name.localeCompare(y.name));   // home/left wins → away/right wins
   const col={h:'#60a5fa',d:'#94a3b8',a:'#fb923c'};
