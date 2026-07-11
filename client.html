@@ -2924,6 +2924,16 @@ function koScoreForRepicker(rePicks){
            matchCount, outcomeCount, advCount, exactCount, scored, penalties };
 }
 
+// A KO game's entered result, or a provisional stand-in from the live ESPN feed
+// so in-progress games appear in the results grids before full time.
+function _koActualOrLive(id){
+  const r=S.kResults[id];
+  if(r && r.home && r.away) return r;
+  const lv=S.gLive && S.gLive[id];
+  if(lv && lv.home && lv.hs!=null)
+    return {home:lv.home, away:lv.away, homeScore:lv.hs, awayScore:lv.as, penWinner:'', _live:true, _detail:lv.detail};
+  return null;
+}
 // Compact "knockout results + everyone's repicks" grid for the Repick sub-tab —
 // mirrors the Results-tab knockout grid but reads each player's repicker bracket.
 function repickerResultsGrid(){
@@ -2931,7 +2941,7 @@ function repickerResultsGrid(){
     .filter(([,picks])=> reQualified(picks))
     .map(([name,picks])=>({name, picks}))
     .sort((a,b)=> a.name===S.name?-1 : b.name===S.name?1 : a.name.localeCompare(b.name));
-  const entered = Object.keys(KO_VENUES).filter(id=>{ if(id==='3rd') return false; const r=S.kResults[id]; return r&&r.home&&r.away&&r.homeScore!=null; });
+  const entered = Object.keys(KO_VENUES).filter(id=>{ if(id==='3rd') return false; const a=_koActualOrLive(id); return !!(a&&a.homeScore!=null); });
   if(!parts.length || !entered.length) return '';
   const reSlot = id => id==='final' ? 'final-1' : id;
   const roundLabel = id => id.startsWith('r32')?'Round of 32':id.startsWith('r16')?'Round of 16':id.startsWith('qf')?'Quarter-finals':id.startsWith('sf')?'Semi-finals':id==='final'?'Final':id;
@@ -2950,16 +2960,17 @@ function repickerResultsGrid(){
     const bg=c.exact?'rgba(74,222,128,0.12)':c.advOk?'rgba(74,222,128,0.06)':'rgba(248,113,113,0.06)';
     return `<td style="${base}background:${bg};">${dh}–${da}${badge}</td>`;
   };
-  const gameCell=actual=>{
+  const gameCell=(actual,id)=>{
     const havePens=actual.homeScore===actual.awayScore&&actual.penHome!=null&&actual.penAway!=null;
-    const pen=(actual.homeScore===actual.awayScore&&actual.penWinner&&!havePens)?` <span style="color:#94a3b8;font-size:0.58rem;">pens ${esc(shortTeamName(actual.penWinner))}</span>`:'';
-    return `<td style="${TD}font-size:0.78rem;white-space:nowrap;"><span style="color:white;">${esc(shortTeamName(actual.home))}</span> <span style="color:#475569;">v</span> <span style="color:white;">${esc(shortTeamName(actual.away))}</span> <span style="color:#fcd34d;font-family:monospace;font-weight:800;margin-left:0.25rem;">${fmtKoScore(actual.homeScore,actual.awayScore,actual.penHome,actual.penAway)}</span>${pen}</td>`;
+    const pen=actual._live?_liveClock(KICKOFFS[id], actual._detail, true, '0.56rem')
+      :(actual.homeScore===actual.awayScore&&actual.penWinner&&!havePens)?` <span style="color:#94a3b8;font-size:0.58rem;">pens ${esc(shortTeamName(actual.penWinner))}</span>`:'';
+    return `<td style="${TD}font-size:0.78rem;white-space:nowrap;"><span style="color:white;">${esc(shortTeamName(actual.home))}</span> <span style="color:#475569;">v</span> <span style="color:white;">${esc(shortTeamName(actual.away))}</span> <span style="color:${actual._live?'#f87171':'#fcd34d'};font-family:monospace;font-weight:800;margin-left:0.25rem;">${fmtKoScore(actual.homeScore,actual.awayScore,actual.penHome,actual.penAway)}</span>${pen}</td>`;
   };
   let body='', last='';
   for(const id of entered){
-    const actual=S.kResults[id]; const rl=roundLabel(id);
+    const actual=_koActualOrLive(id); const rl=roundLabel(id);
     if(rl!==last){ body+=`<tr><td colspan="${1+parts.length}" style="padding:0.35rem 0.5rem;background:#0a1628;color:#fbbf24;font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;position:sticky;left:0;">${rl}</td></tr>`; last=rl; }
-    body+=`<tr>${gameCell(actual)}${parts.map(p=>cell(p,id,actual)).join('')}</tr>`;
+    body+=`<tr>${gameCell(actual,id)}${parts.map(p=>cell(p,id,actual)).join('')}</tr>`;
   }
   const header=`<tr><th style="${TH}text-align:left;">Match</th>${parts.map(p=>`<th style="${TH}text-align:center;" title="${esc(p.name)}">${esc(abbrevName(p.name))}</th>`).join('')}</tr>`;
   return `
@@ -5088,15 +5099,17 @@ function renderResults(){
     id==='3rd'           ? 'Third place' :
     id==='final'         ? 'Final' : id;
 
-  function koGameCell(actual){
+  function koGameCell(actual, id){
     const aHS=actual.homeScore, aAS=actual.awayScore;
     let scoreStr='';
     if(aHS!=null && aAS!=null){
       const havePens = aHS===aAS && actual.penHome!=null && actual.penAway!=null;
-      scoreStr = `<span style="color:#fcd34d;font-family:monospace;font-weight:800;">${fmtKoScore(aHS,aAS,actual.penHome,actual.penAway)}</span>`;
-      scoreStr += (aHS===aAS && actual.penWinner && !havePens)
-        ? `<span style="color:#94a3b8;font-size:0.6rem;margin-left:0.25rem;">pens: ${esc(shortTeamName(actual.penWinner))}</span>`
-        : `<span style="color:#475569;font-size:0.6rem;margin-left:0.2rem;">FT</span>`;
+      scoreStr = `<span style="color:${actual._live?'#f87171':'#fcd34d'};font-family:monospace;font-weight:800;">${fmtKoScore(aHS,aAS,actual.penHome,actual.penAway)}</span>`;
+      scoreStr += actual._live
+        ? _liveClock(KICKOFFS[id], actual._detail, true, '0.6rem')
+        : (aHS===aAS && actual.penWinner && !havePens)
+          ? `<span style="color:#94a3b8;font-size:0.6rem;margin-left:0.25rem;">pens: ${esc(shortTeamName(actual.penWinner))}</span>`
+          : `<span style="color:#475569;font-size:0.6rem;margin-left:0.2rem;">FT</span>`;
     }
     return `<td style="${TD_GAME}font-size:0.82rem;">
       <span style="color:white;font-weight:500;">${teamSpan(actual.home)}</span>
@@ -5126,16 +5139,16 @@ function renderResults(){
     return `<td style="${base}background:${bg};">${dh}–${da}${badge}${pen}</td>`;
   }
 
-  const enteredKo = Object.keys(KO_VENUES).filter(id => { const r=S.kResults[id]; return r && r.home && r.away; });
+  const enteredKo = Object.keys(KO_VENUES).filter(id => { const a=_koActualOrLive(id); return !!(a && a.home && a.away); });
   let koBody='', lastRound='';
   for(const id of enteredKo){
-    const actual=S.kResults[id];
+    const actual=_koActualOrLive(id);
     const rl=koRoundLabel(id);
     if(rl!==lastRound){
       koBody += `<tr><td colspan="${1+koParticipants.length}" style="padding:0.4rem 0.5rem;background:#0a1628;color:#fbbf24;font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;position:sticky;left:0;">${rl}</td></tr>`;
       lastRound=rl;
     }
-    koBody += `<tr>${koGameCell(actual)}${koParticipants.map(p=>koPredCell(p,id,actual)).join('')}</tr>`;
+    koBody += `<tr>${koGameCell(actual,id)}${koParticipants.map(p=>koPredCell(p,id,actual)).join('')}</tr>`;
   }
 
   const koHeaderRow = `
