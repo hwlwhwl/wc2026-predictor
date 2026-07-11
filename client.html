@@ -5526,7 +5526,7 @@ function showPicksPopup(kind, gid, repickMode){
   _closePicksPopup();
   const body = rows.length
     ? `<div style="display:flex;flex-wrap:wrap;gap:0.6rem;align-items:flex-start;justify-content:center;">${rows.map(av).join('')}</div>`
-    : `<div style="color:#64748b;text-align:center;padding:1.5rem;">No picks for this game yet.</div>`;
+    : `<div style="color:#64748b;text-align:center;padding:1.5rem;">No one picked this matchup.</div>`;
   const html = `<div id="picks-popup" onclick="if(event.target===this)_closePicksPopup()" style="position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;padding:1rem;">
     <div style="background:#0d1f35;border:1px solid rgba(255,255,255,0.12);border-radius:1rem;max-width:42rem;width:100%;max-height:85vh;overflow:auto;padding:1.25rem;box-shadow:0 12px 40px rgba(0,0,0,0.5);">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;gap:0.5rem;">
