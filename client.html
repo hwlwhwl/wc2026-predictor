@@ -5315,13 +5315,16 @@ function _koPickDist(slot, homeT, awayT, parts){
 // Crowd split for a KO slot by predicted SCORELINE result (home win · draw→pens
 // · away win), reoriented to the actual home/away teams — mirrors the 3-way
 // group split so the "left·draw·right" legend reads consistently.
-function _koResultDist(slot, homeT, awayT, parts){
+function _koResultDist(slot, homeT, awayT, parts, slotFallback){
   let h=0,d=0,a=0;
   for(const p of parts){
     const kp=p.kPreds&&p.kPreds[slot]; if(!kp||kp.homeScore==null||kp.awayScore==null) continue;
     let hs,as_;
     if(kp.home===homeT&&kp.away===awayT){ hs=kp.homeScore; as_=kp.awayScore; }
     else if(kp.home===awayT&&kp.away===homeT){ hs=kp.awayScore; as_=kp.homeScore; }
+    // Repicker slots are positionally aligned with the real bracket, so a pick
+    // whose stored team labels are stale/missing still counts as-stored.
+    else if(slotFallback){ hs=kp.homeScore; as_=kp.awayScore; }
     else continue;                                  // their slot teams aren't this matchup
     if(hs>as_)h++; else if(hs<as_)a++; else d++;
   }
@@ -5330,7 +5333,10 @@ function _koResultDist(slot, homeT, awayT, parts){
 // The viewer's own pick for an ACTUAL matchup, reoriented to the given home/away.
 // Prefers the same slot, then any slot holding the same pair (a bracket may seat
 // the matchup elsewhere), so the shown score always matches the teams displayed.
-function _userKoPickForActual(slot, homeT, awayT, src){
+// slotFallback (repicker only): repicker slots are positionally aligned with the
+// real bracket, so if no team-name match is found, the slot's pick still counts
+// as-stored — team labels on a saved repick can be stale or missing.
+function _userKoPickForActual(slot, homeT, awayT, src, slotFallback){
   src = src || S.kPreds;
   // Pen winner as a TEAM NAME, whatever shape the pick stored it in:
   // a team name, legacy 'home'/'away', or only shootout scores (penHome/penAway).
@@ -5349,6 +5355,20 @@ function _userKoPickForActual(slot, homeT, awayT, src){
   };
   let r=tryKp(src[slot]); if(r) return r;
   for(const k in src){ if(k===slot) continue; r=tryKp(src[k]); if(r) return r; }
+  if(slotFallback){
+    const kp=src[slot];
+    if(kp && kp.homeScore!=null && kp.awayScore!=null){
+      // Positional read: stored home side = actual home side. Normalize the pen
+      // winner onto the ACTUAL team names so the popup underline still works.
+      let pen=kp.penWinner||'';
+      if(pen==='home' || (pen && pen===kp.home)) pen=homeT;
+      else if(pen==='away' || (pen && pen===kp.away)) pen=awayT;
+      else if(kp.penHome!=null && kp.penAway!=null && kp.penHome!==kp.penAway)
+        pen = kp.penHome>kp.penAway ? homeT : awayT;
+      else if(pen!==homeT && pen!==awayT) pen='';
+      return {hs:kp.homeScore, as:kp.awayScore, pen};
+    }
+  }
   return null;
 }
 // Actual KO matchup teams, resolved from real results (R32 from real qualifiers;
@@ -5421,14 +5441,14 @@ function todaysGamesPanel(parts, repickMode){
       actResult = done.homeScore>done.awayScore?'h':done.homeScore<done.awayScore?'a':'d';
     } else { const t=e.actualKo[slot]||{}; homeT=t.home||'TBD'; awayT=t.away||'TBD'; mid=`<span style="color:#475569;font-size:0.72rem;">${esc(fmtKickoffTime(e.iso))}</span>`; }
     // The viewer's pick for THIS matchup, oriented to the displayed home/away.
-    const mp=_userKoPickForActual(reSlot(slot), homeT, awayT, viewerSrc);
+    const mp=_userKoPickForActual(reSlot(slot), homeT, awayT, viewerSrc, repickMode);
     let pickTxt='–', pickCol='#475569';
     if(mp){
       pickTxt=`${mp.hs}–${mp.as}`;
       if(done && done.homeScore!=null){ const c=koCompare({home:homeT,away:awayT,homeScore:mp.hs,awayScore:mp.as,penWinner:mp.pen}, done); pickCol = c.exact?'#4ade80':c.advOk?'#facc15':(c.kind==='nopick'?'#475569':'#f87171'); }
       else pickCol='#94a3b8';
     }
-    const d=_koResultDist(reSlot(slot), homeT, awayT, parts);   // 3-way: home win · draw(pens) · away win
+    const d=_koResultDist(reSlot(slot), homeT, awayT, parts, repickMode);   // 3-way: home win · draw(pens) · away win
     const dist=`${seg(d.h,'#60a5fa',actResult==='h')}·${seg(d.d,'#94a3b8',actResult==='d')}·${seg(d.a,'#fb923c',actResult==='a')}`;
     return rowHTML(pickCell(pickTxt,pickCol), homeT, awayT, mid, dist, `showPicksPopup('ko','${slot}',${!!repickMode})`);
   });
@@ -5460,7 +5480,7 @@ function showPicksPopup(kind, gid, repickMode){
     const src = repickMode
       ? Object.entries(S.allRePicks||{}).map(([name,picks])=>({name, kp:picks}))
       : [{name:S.name+' (you)', kp:S.kPreds}, ...(picksVisible()?S.otherUsers.map(u=>({name:u.name, kp:u.kPreds||{}})):[])];
-    for(const p of src){ const mp=_userKoPickForActual(slot, homeT, awayT, p.kp); if(!mp) continue; const m=mp.hs-mp.as;
+    for(const p of src){ const mp=_userKoPickForActual(slot, homeT, awayT, p.kp, repickMode); if(!mp) continue; const m=mp.hs-mp.as;
       // Draw pick: underline the score of the team they picked to win the shootout.
       // border-bottom + currentColor so it's clearly visible in both themes
       // (text-decoration in a faint fixed color vanished in light mode).
