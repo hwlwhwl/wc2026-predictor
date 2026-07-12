@@ -5407,12 +5407,28 @@ function fmtKoScore(hs, as_, penHome, penAway){
     ? `${hs} (${penHome}p)–${as_} (${penAway}p)`
     : `${hs}–${as_}`;
 }
-// Compact "today's games" strip for the leaderboard (group + knockout): the
-// live/final/upcoming score plus the high-level pick split, result underlined.
-// repickMode: show only knockout games and source the viewer's pick + crowd
-// split from the Repicker bracket (parts carry rePicks as `kPreds`).
+// Day navigation for the games strip: remember the selected day per view and
+// re-render. Keys are localDateKey strings; mode is 'or' (original) or 're'.
+function _tgNav(mode, dateKey){ (S.tgDates=S.tgDates||{})[mode]=dateKey; render(); }
+// Compact games strip for the leaderboard (group + knockout): the live/final/
+// upcoming score plus the high-level pick split, result underlined. Defaults to
+// today (or the nearest day with games) and can be paged back/forward through
+// every tournament day. repickMode: show only knockout games and source the
+// viewer's pick + crowd split from the Repicker bracket (parts carry rePicks
+// as `kPreds`).
 function todaysGamesPanel(parts, repickMode){
   const todayKey = localDateKey(new Date().toISOString());
+  const mode = repickMode ? 're' : 'or';
+  // Every day (viewer-local) that has at least one game in this view.
+  const dateSet=new Set();
+  if(!repickMode){ for(const g of GROUP_GAMES){ const iso=gameKickoff(g); if(iso) dateSet.add(localDateKey(iso)); } }
+  for(const slot of Object.keys(KO_VENUES)){ if(repickMode && slot==='3rd') continue; const iso=KICKOFFS[slot]; if(iso) dateSet.add(localDateKey(iso)); }
+  const dates=[...dateSet].sort();
+  if(!dates.length) return '';
+  let sel=(S.tgDates||{})[mode];
+  if(!sel || !dates.includes(sel))
+    sel = dates.includes(todayKey) ? todayKey : (dates.find(d=>d>todayKey) || dates[dates.length-1]);
+  const idx=dates.indexOf(sel);
   const viewerSrc = repickMode ? S.rePicks : S.kPreds;
   const reSlot = slot => (repickMode && slot==='final') ? 'final-1' : slot;
   const seg=(n,color,on)=>`<span style="color:${color};font-weight:${on?800:600};${on?'text-decoration:underline;':''}">${n}</span>`;
@@ -5426,8 +5442,8 @@ function todaysGamesPanel(parts, repickMode){
     </div>`;
 
   const entries=[];
-  if(!repickMode){ for(const g of GROUP_GAMES){ const iso=gameKickoff(g); if(iso && localDateKey(iso)===todayKey) entries.push({iso, kind:'group', g}); } }
-  const koToday = Object.keys(KO_VENUES).filter(slot=>{ if(repickMode && slot==='3rd') return false; const iso=KICKOFFS[slot]; return iso && localDateKey(iso)===todayKey; });
+  if(!repickMode){ for(const g of GROUP_GAMES){ const iso=gameKickoff(g); if(iso && localDateKey(iso)===sel) entries.push({iso, kind:'group', g}); } }
+  const koToday = Object.keys(KO_VENUES).filter(slot=>{ if(repickMode && slot==='3rd') return false; const iso=KICKOFFS[slot]; return iso && localDateKey(iso)===sel; });
   if(koToday.length){ const actualKo=_actualKoTeams(); for(const slot of koToday) entries.push({iso:KICKOFFS[slot], kind:'ko', slot, actualKo}); }
   if(!entries.length) return '';
   entries.sort((x,y)=>(x.iso||'').localeCompare(y.iso||''));
@@ -5471,9 +5487,20 @@ function todaysGamesPanel(parts, repickMode){
     return rowHTML(pickCell(pickTxt,pickCol), homeT, awayT, mid, dist, `showPicksPopup('ko','${slot}',${!!repickMode})`);
   });
 
+  const dayLabel = sel===todayKey ? "Today's games"
+    : new Date(sel+'T12:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'});
+  const navBtn=(dir,target)=>{
+    const on=!!target;
+    return `<button ${on?`onclick="_tgNav('${mode}','${target}')"`:'disabled'}
+      style="background:none;border:none;padding:0 0.3rem;font-size:0.7rem;line-height:1;cursor:${on?'pointer':'default'};color:${on?'#94a3b8':'#334155'};">${dir}</button>`;
+  };
   return `<div style="background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;padding:0.6rem 1rem 0.4rem;margin-bottom:1.25rem;">
     <div style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:#64748b;margin-bottom:0.4rem;display:flex;justify-content:space-between;align-items:baseline;gap:0.5rem;flex-wrap:wrap;">
-      <span>📅 Today's games${repickMode?' · repick':''}</span>
+      <span style="display:inline-flex;align-items:baseline;gap:0.15rem;">
+        ${navBtn('◀', idx>0?dates[idx-1]:null)}
+        <span>📅 ${dayLabel}${repickMode?' · repick':''}</span>
+        ${navBtn('▶', idx<dates.length-1?dates[idx+1]:null)}
+      </span>
       <span style="text-transform:none;font-size:0.62rem;color:#475569;">picks: <span style="color:#60a5fa;">left</span>·<span style="color:#94a3b8;">draw</span>·<span style="color:#fb923c;">right</span></span>
     </div>
     ${rows.join('')}
