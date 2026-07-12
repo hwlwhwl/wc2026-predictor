@@ -5171,8 +5171,10 @@ function renderResults(){
   // picks, the actual result underlined; tap to open the full picks popup.
   const splitSpan=(dist,actual,call,label)=>{
     const s=`${seg(dist.h,'#60a5fa',actual==='h')}·${seg(dist.d,'#94a3b8',actual==='d')}·${seg(dist.a,'#fb923c',actual==='a')}`;
-    const lbl=label?`<span style="color:${label==='R'?'#a78bfa':'#4ade80'};font-weight:800;">${label} </span>`:'';
-    return `<span onclick="${call}" title="Tap to see everyone's picks${label?` — ${label==='O'?'original brackets':'repicker'}`:''}" style="cursor:pointer;font-family:monospace;font-size:0.72rem;white-space:nowrap;">${lbl}${s}</span>`;
+    // Label OUTSIDE the monospace stream (an O in monospace reads as a zero):
+    // tiny sans-serif word tags, green for original / purple for repicker.
+    const lbl=label?`<span style="font-family:inherit;font-size:0.56rem;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;color:${label==='re'?'#a78bfa':'#4ade80'};margin-right:0.25rem;">${label}</span>`:'';
+    return `<span onclick="${call}" title="Tap to see everyone's picks${label?` — ${label==='re'?'repicker':'original brackets'}`:''}" style="cursor:pointer;font-family:monospace;font-size:0.72rem;white-space:nowrap;">${lbl}${s}</span>`;
   };
   const rowHTML=(chip,homeT,awayT,mid,splits,rowBg)=>`
     <div style="display:flex;align-items:center;gap:0.5rem;padding:0.38rem 0.75rem;border-bottom:1px solid rgba(255,255,255,0.05);font-size:0.84rem;${rowBg||''}">
@@ -5212,10 +5214,10 @@ function renderResults(){
         : (a.homeScore===a.awayScore&&a.penWinner&&!havePens) ? ` <span style="color:#94a3b8;font-size:0.56rem;">pens ${esc(shortTeamName(a.penWinner))}</span>`
         : ` <span style="color:#475569;font-size:0.56rem;">FT</span>`;
       const actual=a.homeScore>a.awayScore?'h':a.homeScore<a.awayScore?'a':'d';
-      const splits=[splitSpan(_koResultDist(e.slot, a.home, a.away, parts), actual, `showPicksPopup('ko','${e.slot}',false)`, 'O')];
+      const splits=[splitSpan(_koResultDist(e.slot, a.home, a.away, parts), actual, `showPicksPopup('ko','${e.slot}',false)`, 'orig')];
       if(e.slot!=='3rd' && reParts.length){
         const reSlot=e.slot==='final'?'final-1':e.slot;
-        splits.push(splitSpan(_koResultDist(reSlot, a.home, a.away, reParts, true), actual, `showPicksPopup('ko','${e.slot}',true)`, 'R'));
+        splits.push(splitSpan(_koResultDist(reSlot, a.home, a.away, reParts, true), actual, `showPicksPopup('ko','${e.slot}',true)`, 're'));
       }
       body+=rowHTML(roundChip(e.slot), a.home, a.away, mid, splits.join(''), a._live?'background:rgba(239,68,68,0.06);':'');
     }
@@ -5230,7 +5232,7 @@ function renderResults(){
       ?`<div style="text-align:center;padding:3rem 1rem;color:#64748b;"><div style="font-size:2rem;margin-bottom:0.5rem;">⏳</div>Results appear here as games are played.</div>`
       :`<div style="background:#112a45;border:1px solid rgba(255,255,255,0.08);border-radius:0.75rem;overflow:hidden;">
         <div style="display:flex;justify-content:flex-end;gap:0.3rem;padding:0.4rem 0.75rem;font-size:0.62rem;color:#475569;border-bottom:1px solid rgba(255,255,255,0.06);flex-wrap:wrap;">
-          picks: <span style="color:#60a5fa;">left</span>·<span style="color:#94a3b8;">draw</span>·<span style="color:#fb923c;">right</span> — tap a split for everyone's picks · <span style="color:#4ade80;font-weight:700;">O</span> = original · <span style="color:#a78bfa;font-weight:700;">R</span> = repicker
+          picks: <span style="color:#60a5fa;">left</span>·<span style="color:#94a3b8;">draw</span>·<span style="color:#fb923c;">right</span> — tap a split for everyone's picks · <span style="color:#4ade80;font-weight:700;">ORIG</span> = original · <span style="color:#a78bfa;font-weight:700;">RE</span> = repicker
         </div>
         ${body}
       </div>`}
