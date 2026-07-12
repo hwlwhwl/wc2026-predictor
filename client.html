@@ -5171,7 +5171,7 @@ function renderResults(){
   // picks, the actual result underlined; tap to open the full picks popup.
   const splitSpan=(dist,actual,call,label)=>{
     const s=`${seg(dist.h,'#60a5fa',actual==='h')}·${seg(dist.d,'#94a3b8',actual==='d')}·${seg(dist.a,'#fb923c',actual==='a')}`;
-    const lbl=label?`<span style="color:#475569;font-weight:700;">${label} </span>`:'';
+    const lbl=label?`<span style="color:${label==='R'?'#a78bfa':'#4ade80'};font-weight:800;">${label} </span>`:'';
     return `<span onclick="${call}" title="Tap to see everyone's picks${label?` — ${label==='O'?'original brackets':'repicker'}`:''}" style="cursor:pointer;font-family:monospace;font-size:0.72rem;white-space:nowrap;">${lbl}${s}</span>`;
   };
   const rowHTML=(chip,homeT,awayT,mid,splits,rowBg)=>`
@@ -5230,7 +5230,7 @@ function renderResults(){
       ?`<div style="text-align:center;padding:3rem 1rem;color:#64748b;"><div style="font-size:2rem;margin-bottom:0.5rem;">⏳</div>Results appear here as games are played.</div>`
       :`<div style="background:#112a45;border:1px solid rgba(255,255,255,0.08);border-radius:0.75rem;overflow:hidden;">
         <div style="display:flex;justify-content:flex-end;gap:0.3rem;padding:0.4rem 0.75rem;font-size:0.62rem;color:#475569;border-bottom:1px solid rgba(255,255,255,0.06);flex-wrap:wrap;">
-          picks: <span style="color:#60a5fa;">left</span>·<span style="color:#94a3b8;">draw</span>·<span style="color:#fb923c;">right</span> — tap a split for everyone's picks · O = original · R = repicker
+          picks: <span style="color:#60a5fa;">left</span>·<span style="color:#94a3b8;">draw</span>·<span style="color:#fb923c;">right</span> — tap a split for everyone's picks · <span style="color:#4ade80;font-weight:700;">O</span> = original · <span style="color:#a78bfa;font-weight:700;">R</span> = repicker
         </div>
         ${body}
       </div>`}
@@ -5617,23 +5617,13 @@ function todaysGamesPanel(parts, repickMode){
 // home/left win is far left, draws centre, a big away/right win far right).
 function _closePicksPopup(){ const el=document.getElementById('picks-popup'); if(el) el.remove(); }
 function showPicksPopup(kind, gid, repickMode){
-  let homeT, awayT, rows=[];
-  if(kind==='group'){
-    const g=GROUP_GAMES.find(x=>x.id===gid); if(!g) return;
-    homeT=g.home; awayT=g.away;
-    const ppl=[{name:S.name+' (you)', gp:S.gPreds}, ...(picksVisible()?S.otherUsers.map(u=>({name:u.name, gp:u.gPreds||{}})):[])];
-    for(const p of ppl){ const pr=p.gp&&p.gp[gid]; if(!pr) continue; const m=pr[0]-pr[1]; rows.push({name:p.name, side:m>0?'h':m<0?'a':'d', margin:m, label:`${pr[0]}–${pr[1]}`}); }
-  } else {
-    const a=S.kResults[gid]; const at=(a&&a.home)?a:(_actualKoTeams()[gid]||{});
-    homeT=at.home||'TBD'; awayT=at.away||'TBD';
-    const slot=repickMode&&gid==='final'?'final-1':gid;
-    const src = repickMode
-      ? Object.entries(S.allRePicks||{}).map(([name,picks])=>({name, kp:picks}))
-      : [{name:S.name+' (you)', kp:S.kPreds}, ...(picksVisible()?S.otherUsers.map(u=>({name:u.name, kp:u.kPreds||{}})):[])];
-    for(const p of src){ const mp=_userKoPickForActual(slot, homeT, awayT, p.kp, repickMode); if(!mp) continue; const m=mp.hs-mp.as;
-      // Draw pick: underline the score of the team they picked to win the shootout.
-      // border-bottom + currentColor so it's clearly visible in both themes
-      // (text-decoration in a faint fixed color vanished in light mode).
+  let homeT, awayT, sections=[];
+  // Rows for one KO source (original kPreds or repicker picks).
+  const koRows=(slot, src, re)=>{
+    const rows=[];
+    for(const p of src){ const mp=_userKoPickForActual(slot, homeT, awayT, p.kp, re); if(!mp) continue; const m=mp.hs-mp.as;
+      // Draw pick: underline the score of the team they picked to win the
+      // shootout (border-bottom + currentColor so it shows in both themes).
       let label=`${mp.hs}–${mp.as}`;
       if(m===0 && mp.pen){
         const u=s=>`<span style="border-bottom:2px solid currentColor;padding-bottom:1px;">${s}</span>`;
@@ -5665,8 +5655,27 @@ function showPicksPopup(kind, gid, repickMode){
       rows.push({name:p.name, side, margin: side==='h'?0.5:-0.5,
         label: `<span title="${tip}" style="color:${side==='h'?'#60a5fa':'#fb923c'};font-weight:800;">${side==='h'?'◀':'▶'}</span>`});
     }
+    rows.sort((x,y)=> y.margin-x.margin || x.name.localeCompare(y.name));   // home/left wins → away/right wins
+    return rows;
+  };
+  if(kind==='group'){
+    const g=GROUP_GAMES.find(x=>x.id===gid); if(!g) return;
+    homeT=g.home; awayT=g.away;
+    const rows=[];
+    const ppl=[{name:S.name+' (you)', gp:S.gPreds}, ...(picksVisible()?S.otherUsers.map(u=>({name:u.name, gp:u.gPreds||{}})):[])];
+    for(const p of ppl){ const pr=p.gp&&p.gp[gid]; if(!pr) continue; const m=pr[0]-pr[1]; rows.push({name:p.name, side:m>0?'h':m<0?'a':'d', margin:m, label:`${pr[0]}–${pr[1]}`}); }
+    rows.sort((x,y)=> y.margin-x.margin || x.name.localeCompare(y.name));
+    sections=[{label:'', rows}];
+  } else {
+    // KO game: show BOTH games — original brackets on top, repicker below.
+    const a=S.kResults[gid]; const at=(a&&a.home)?a:(_actualKoTeams()[gid]||{});
+    homeT=at.home||'TBD'; awayT=at.away||'TBD';
+    const orig=[{name:S.name+' (you)', kp:S.kPreds}, ...(picksVisible()?S.otherUsers.map(u=>({name:u.name, kp:u.kPreds||{}})):[])];
+    sections=[{label:'Original brackets', rows:koRows(gid, orig, false)}];
+    if(gid!=='3rd' && Object.keys(S.allRePicks||{}).length)
+      sections.push({label:'🔄 Repicker', repick:true,
+        rows:koRows(gid==='final'?'final-1':gid, Object.entries(S.allRePicks||{}).map(([name,picks])=>({name, kp:picks})), true)});
   }
-  rows.sort((x,y)=> y.margin-x.margin || x.name.localeCompare(y.name));   // home/left wins → away/right wins
   const col={h:'#60a5fa',d:'#94a3b8',a:'#fb923c'};
   const av=r=>{
     const src=_entryAvatar(r.name), ring=col[r.side];
@@ -5680,13 +5689,17 @@ function showPicksPopup(kind, gid, repickMode){
     </div>`;
   };
   _closePicksPopup();
-  const body = rows.length
-    ? `<div style="display:flex;flex-wrap:wrap;gap:0.6rem;align-items:flex-start;justify-content:center;">${rows.map(av).join('')}</div>`
-    : `<div style="color:#64748b;text-align:center;padding:1.5rem;">No one picked this matchup.</div>`;
+  const secHTML=(sec,i)=>`
+    ${i>0?'<div style="border-top:1px solid rgba(255,255,255,0.08);margin-top:0.9rem;"></div>':''}
+    ${sec.label?`<div style="font-size:0.64rem;text-transform:uppercase;letter-spacing:0.05em;color:${sec.repick?'#a78bfa':'#4ade80'};margin:${i>0?'0.8rem':'0'} 0 0.45rem;font-weight:700;">${sec.label}</div>`:''}
+    ${sec.rows.length
+      ? `<div style="display:flex;flex-wrap:wrap;gap:0.6rem;align-items:flex-start;justify-content:center;">${sec.rows.map(av).join('')}</div>`
+      : `<div style="color:#64748b;text-align:center;padding:0.8rem;font-size:0.8rem;">No one picked this matchup.</div>`}`;
+  const body=sections.map(secHTML).join('');
   const html = `<div id="picks-popup" onclick="if(event.target===this)_closePicksPopup()" style="position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;padding:1rem;">
     <div style="background:#0d1f35;border:1px solid rgba(255,255,255,0.12);border-radius:1rem;max-width:42rem;width:100%;max-height:85vh;overflow:auto;padding:1.25rem;box-shadow:0 12px 40px rgba(0,0,0,0.5);">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem;gap:0.5rem;">
-        <div style="font-weight:700;color:white;font-size:0.95rem;">${flag(homeT)} ${esc(shortTeamName(homeT))} v ${esc(shortTeamName(awayT))} ${flag(awayT)}${repickMode?' · repick':''}</div>
+        <div style="font-weight:700;color:white;font-size:0.95rem;">${flag(homeT)} ${esc(shortTeamName(homeT))} v ${esc(shortTeamName(awayT))} ${flag(awayT)}</div>
         <button onclick="_closePicksPopup()" style="background:none;border:none;color:#94a3b8;font-size:1.2rem;cursor:pointer;line-height:1;">✕</button>
       </div>
       <div style="display:flex;justify-content:space-between;font-size:0.68rem;margin-bottom:0.75rem;">
