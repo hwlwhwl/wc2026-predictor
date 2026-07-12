@@ -2924,6 +2924,86 @@ function koScoreForRepicker(rePicks){
            matchCount, outcomeCount, advCount, exactCount, scored, penalties };
 }
 
+// ── Potential (best-case) points still available ─────────────
+// Which teams can still occupy each SIDE of each KO slot, from real data only:
+// a side whose feeder game is decided is that single winner; an undecided side
+// is every not-yet-eliminated team in its feeder subtree.
+function koPossibleSides(){
+  const bracket=actualKoBracket();
+  const eliminated=new Set();
+  for(const id of Object.keys(KO_VENUES)){
+    if(id==='3rd') continue;
+    const r=S.kResults[id]; if(!r||!r.home||!r.away||r.homeScore==null) continue;
+    const adv=koAdvancer(r.home,r.away,r.homeScore,r.awayScore,r.penWinner);
+    if(adv) eliminated.add(adv===r.home?r.away:r.home);
+  }
+  const alive=t=>!!t&&!eliminated.has(t);
+  const gameDone=id=>{ const r=S.kResults[id]; return !!(r&&r.home&&r.away&&r.homeScore!=null); };
+  const winnersOfDone=id=>{ const r=S.kResults[id]; const a=koAdvancer(r.home,r.away,r.homeScore,r.awayScore,r.penWinner); return new Set(a?[a]:[]); };
+  const out={}, winCand={};
+  const r32Ids=R32_FIXED.map(m=>m.id);
+  for(const id of r32Ids){
+    const g=bracket[id]||{};
+    out[id]={home:new Set([g.home].filter(alive)), away:new Set([g.away].filter(alive))};
+    winCand[id]= gameDone(id) ? winnersOfDone(id) : new Set([g.home,g.away].filter(alive));
+  }
+  const link=(id,fa,fb)=>{
+    out[id]={home:winCand[fa], away:winCand[fb]};
+    winCand[id]= gameDone(id) ? winnersOfDone(id) : new Set([...winCand[fa],...winCand[fb]].filter(alive));
+  };
+  [[11,13],[0,2],[1,6],[8,15],[7,4],[10,12],[5,3],[9,14]].forEach(([a,b],i)=>link(`r16-${i+1}`, r32Ids[a], r32Ids[b]));
+  [[0,1],[2,3],[4,5],[6,7]].forEach(([a,b],i)=>link(`qf-${i+1}`, `r16-${a+1}`, `r16-${b+1}`));
+  link('sf-1','qf-1','qf-3'); link('sf-2','qf-2','qf-4');
+  link('final','sf-1','sf-2');
+  // 3rd place is played by the semi LOSERS: a decided semi contributes its
+  // loser; an undecided one, anyone who can still reach it.
+  const loserSide=sid=>{
+    if(gameDone(sid)){ const r=S.kResults[sid]; const a=koAdvancer(r.home,r.away,r.homeScore,r.awayScore,r.penWinner); const l=a?(a===r.home?r.away:r.home):null; return new Set(l?[l]:[]); }
+    return new Set([...out[sid].home,...out[sid].away]);
+  };
+  out['3rd']={home:loserSide('sf-1'), away:loserSide('sf-2')};
+  return out;
+}
+// Best case a single KO pick can still earn against the possible-side sets:
+// both teams still reachable → full house (matchup×2 + outcome + advancer +
+// exact, score permitting); one team reachable → its matchup point, plus the
+// advancer point if that reachable team is the one they advanced.
+function _koPickPotential(kp, pos, P){
+  if(!kp||!kp.home||!kp.away||!pos) return 0;
+  const A=kp.home, B=kp.away;
+  const AB=(pos.home.has(A)&&pos.away.has(B)) || (pos.home.has(B)&&pos.away.has(A));
+  if(AB) return P.matchup*2 + (kp.homeScore!=null&&kp.awayScore!=null ? P.outcome+P.advancer+P.exact : 0);
+  const oneIn=t=>pos.home.has(t)||pos.away.has(t);
+  if(!oneIn(A)&&!oneIn(B)) return 0;
+  let best=P.matchup;
+  const adv=_predAdvancerFor(kp, A, B);
+  if(adv && oneIn(adv)) best+=P.advancer;
+  return best;
+}
+// Max points a player's ORIGINAL bracket can still earn from undecided KO games.
+function potentialKoFor(picks, possible){
+  const w=koWeights(), P=koPts(); let pot=0;
+  for(const id of Object.keys(KO_VENUES)){
+    const r=S.kResults[id]; if(r&&r.homeScore!=null) continue;
+    pot += _koPickPotential(picks[id], possible[id], P) * (w[koRoundKey(id)]||1);
+  }
+  return +pot.toFixed(2);
+}
+// Max points a REPICKER bracket can still earn. Unpicked undecided games are a
+// certain −5 once they finish (the repicker is locked), so they count against.
+function potentialRepickFor(picks, possible){
+  const w=reWeights(), P=koPts();
+  const rk=id=>id.startsWith('r32')?'r32':id.startsWith('r16')?'r16':id.startsWith('qf')?'qf':id.startsWith('sf')?'sf':'final';
+  let pot=0;
+  for(const id of RE_SLOT_IDS){
+    const realId = id==='final-1'?'final':id;
+    const r=S.kResults[realId]; if(r&&r.homeScore!=null) continue;
+    if(!reHasPick(picks,id)){ pot -= RE_MISS_PENALTY; continue; }
+    pot += _koPickPotential(picks[id], possible[realId], P) * (w[rk(id)]||1);
+  }
+  return +pot.toFixed(2);
+}
+
 // A KO game's entered result, or a provisional stand-in from the live ESPN feed
 // so in-progress games appear in the results grids before full time.
 function _koActualOrLive(id){
@@ -5245,7 +5325,7 @@ function _podiumAvatar(name, accent, size, bounce){
 // gold ⇒ empty silver & bronze — standard competition ranking). Anyone newly on
 // the podium since the viewer last saw it bounces. `storageKey` namespaces the
 // bounce memory per podium.
-function renderPodium(entries, getVal, title, storageKey){
+function renderPodium(entries, getVal, title, storageKey, getPot){
   if(!entries || !entries.length) return '';
   const sorted=[...entries].sort((a,b)=>getVal(b)-getVal(a));
   if(getVal(sorted[0])<=0) return '';
@@ -5274,8 +5354,9 @@ function renderPodium(entries, getVal, title, storageKey){
       <div style="display:flex;align-items:flex-end;gap:3px;flex-wrap:wrap;justify-content:center;">${avatars}</div>
       <div style="font-size:1.15rem;line-height:1;">${medals[rank]}</div>
       <div style="font-size:0.78rem;font-weight:600;color:#e2e8f0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${label}</div>
-      <div style="width:100%;height:${p.h};background:linear-gradient(180deg,${a}33,${a}0d);border:1px solid ${a}55;border-bottom:none;border-radius:0.5rem 0.5rem 0 0;display:flex;align-items:flex-start;justify-content:center;padding-top:0.4rem;">
+      <div style="width:100%;height:${p.h};background:linear-gradient(180deg,${a}33,${a}0d);border:1px solid ${a}55;border-bottom:none;border-radius:0.5rem 0.5rem 0 0;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding-top:0.4rem;gap:0.1rem;">
         <span style="font-size:1.05rem;font-weight:800;color:${a};">${getVal(list[0])}</span>
+        ${getPot?`<span title="Best case points still available" style="font-size:0.62rem;font-weight:600;color:#38bdf8;">${(v=>`${v>0?'+':''}${v} poss.`)(Math.max(...list.map(getPot)))}</span>`:''}
       </div>
     </div>`;
   };
@@ -5630,6 +5711,7 @@ function renderCompare(){
   // R32 from the actual qualifiers; later rounds propagated from real feeder
   // advancers, so a matchup counts as soon as both feeder games are decided.
   const actualKoTeams=actualKoBracket();
+  const koPossible=koPossibleSides();   // who can still occupy each slot side
   const lb=allPred.map(p=>{
     let groupTotal=0,exact=0,correct=0,scored=0,bad=0,surprise=0;
     for(const [gid,pr] of Object.entries(p.gPreds)){
@@ -5663,7 +5745,12 @@ function renderCompare(){
     // a weighted score — including skip penalties — so the table matches the chart.
     const weighted=completed.length>0?+(W.a*correct+W.b*exact-W.c*bad).toFixed(2):null;
     const total=+(((weighted ?? 0)+ko.koTotal+roundTeamsPts)).toFixed(2);
-    return {name:p.name,total,groupTotal,koTotal:ko.koTotal,matchups:ko.matchups,rt,roundTeamsPts,
+    // Best case still available: remaining group games (perfect pick = A+B each,
+    // a skipped game is a certain −3 PAB) + remaining KO potential.
+    let potential=potentialKoFor(koPicks, koPossible);
+    for(const game of GROUP_GAMES){ if(!S.gResults[game.id]) potential += p.gPreds[game.id] ? (W.a+W.b) : -3*W.c; }
+    potential=+potential.toFixed(2);
+    return {name:p.name,total,groupTotal,koTotal:ko.koTotal,matchups:ko.matchups,rt,roundTeamsPts,potential,
             koMatchupRound:koMatchupByRound(p, actualKoTeams),
             exact,correct,scored,bad,weighted,surprise:+surprise.toFixed(1),predCount:Object.keys(p.gPreds).length};
   }).sort((a,b)=>{
@@ -5705,6 +5792,7 @@ function renderCompare(){
         <th style="padding:0.75rem 1rem;text-align:left;width:2rem;">#</th>
         <th style="padding:0.75rem 1rem;text-align:left;">Name</th>
         ${thSort('total',   'Total',   'Weighted score (A×correct + B×exact − C×PAB) + weighted knockout points')}
+        ${thSort('potential','Max +',  'Best case points still available from undecided games — if every remaining pick lands perfectly')}
         ${thSort('surprise','Surprise','Odds-weighted: each correct result (group W/D/L or KO advancer) earns its points × the crowd odds of that outcome, capped at ×'+ODDS_WEIGHT_CAP+' — calling an upset few backed is worth more')}
         ${koActive?thSort('weighted','Group','Weighted group score: A×correct + B×exact − C×PAB'):''}
         ${koActive?thSort('koTotal',  '🥊', 'Knockout points: correct advancer + exact-score bonus, weighted by round'):''}
@@ -5728,6 +5816,7 @@ function renderCompare(){
             ${maxPts>0?`<div style="margin-top:3px;height:3px;background:rgba(255,255,255,0.08);border-radius:9999px;width:7rem;overflow:hidden;"><div style="height:100%;background:#16a34a;width:${Math.max(0,Math.min(100,e.total/maxPts*100)).toFixed(1)}%;"></div></div>`:''}
           </td>
           <td style="padding:0.75rem 1rem;text-align:right;font-weight:700;color:#fcd34d;font-size:1rem;">${e.total}</td>
+          <td style="padding:0.75rem 1rem;text-align:right;color:#38bdf8;font-weight:600;" title="Best case: could reach ${(e.total+e.potential).toFixed(1)}">${e.potential>0?'+':''}${e.potential}</td>
           <td style="padding:0.75rem 1rem;text-align:right;color:#f0abfc;font-weight:600;">${e.scored>0?e.surprise:'–'}</td>
           ${koActive?`<td style="padding:0.75rem 1rem;text-align:right;color:#94a3b8;">${e.weighted ?? 0}</td>`:''}
           ${koActive?`<td style="padding:0.75rem 1rem;text-align:right;color:#a78bfa;font-weight:600;">${e.koTotal}</td>`:''}
@@ -5774,6 +5863,7 @@ function renderCompare(){
   const reLbAll = Object.entries(S.allRePicks||{})
     .filter(([name,picks])=> reQualified(picks))                          // ≥half R32 — complete or in-progress
     .map(([name,picks])=>({ name, ...koScoreForRepicker(picks),
+      potential: potentialRepickFor(picks, koPossible),
       complete: rePickComplete(picks),
       picked: RE_SLOT_IDS.filter(id=>reHasPick(picks,id)).length }))
     .sort((a,b)=>b.koTotal-a.koTotal||b.matchups-a.matchups||a.name.localeCompare(b.name));
@@ -5820,6 +5910,7 @@ function renderCompare(){
         <td style="padding:0.6rem 1rem;">${i<3?MED[i]:i+1}</td>
         <td style="padding:0.6rem 1rem;color:white;font-weight:500;white-space:nowrap;">${avFor(e.name)}${esc(e.name)}${e.name===S.name?' (you)':''}${e.complete?'':` <span title="Bracket not finished — ${e.picked}/${RE_SLOT_IDS.length} games picked" style="font-size:0.6rem;color:#fbbf24;background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.3);border-radius:0.3rem;padding:0.05rem 0.3rem;vertical-align:middle;">partial ${e.picked}/${RE_SLOT_IDS.length}</span>`}</td>
         <td style="padding:0.6rem 1rem;text-align:right;font-weight:700;color:#a78bfa;">${e.koTotal}</td>
+        <td style="padding:0.6rem 1rem;text-align:right;color:#38bdf8;font-weight:600;" title="Best case: could reach ${(e.koTotal+e.potential).toFixed(1)}">${e.potential>0?'+':''}${e.potential}</td>
         <td style="padding:0.6rem 1rem;text-align:right;color:#cbd5e1;">${e.matchCount}</td>
         <td style="padding:0.6rem 1rem;text-align:right;color:#facc15;">${e.outcomeCount}</td>
         <td style="padding:0.6rem 1rem;text-align:right;color:#22d3ee;">${e.advCount}</td>
@@ -5838,6 +5929,7 @@ function renderCompare(){
             <th style="padding:0.6rem 1rem;text-align:left;width:2rem;">#</th>
             <th style="padding:0.6rem 1rem;text-align:left;">Name</th>
             <th style="padding:0.6rem 1rem;text-align:right;" title="Overall score (weighted)">Score</th>
+            <th style="padding:0.6rem 1rem;text-align:right;" title="Best case points still available from undecided games (unpicked games count −5)">Max +</th>
             <th style="padding:0.6rem 1rem;text-align:right;" title="Games with both teams correct">Matches</th>
             <th style="padding:0.6rem 1rem;text-align:right;" title="Games where you called the regulation result (win/draw/win) right">Outcome</th>
             <th style="padding:0.6rem 1rem;text-align:right;" title="Games where you called the advancing team right">Advancer</th>
@@ -5879,10 +5971,10 @@ function renderCompare(){
 
   // ── Overall podium (top 3 by Total) — sits between the KO and overall tables ──
   const podiumHTML = (lb.length>0 && completed.length>0)
-    ? renderPodium(lb, e=>e.total, '🏆 Overall podium', 'wc26_podium_overall') : '';
+    ? renderPodium(lb, e=>e.total, '🏆 Overall podium', 'wc26_podium_overall', e=>e.potential) : '';
 
   // ── Repick podium (by repicker KO points) for the Repick sub-tab ──
-  const repickPodiumHTML = renderPodium(reLbAll, e=>e.koTotal, '🔄 Repick podium', 'wc26_podium_repick');
+  const repickPodiumHTML = renderPodium(reLbAll, e=>e.koTotal, '🔄 Repick podium', 'wc26_podium_repick', e=>e.potential);
 
   // Sub-tabs: Original (the main game) vs Repick (the KO re-pick game). Default
   // to Repick once the knockouts are under way; sticky once the user clicks.
