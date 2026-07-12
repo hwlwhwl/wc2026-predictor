@@ -3014,6 +3014,90 @@ function potentialRepickFor(picks, possible){
   return {max:+pot.toFixed(2), min:+certain.toFixed(2), detail:parts.join(' · ')};
 }
 
+// ── Pairwise reachability (shared-outcome aware) ─────────────
+// Two players' remaining points come from the SAME games, so if their picks
+// coincide the trailing player can never make the gap up. For each undecided
+// game we compute the max of (pts_i − pts_j) over the outcomes still possible,
+// picking every free variable (pairing, score, advancer) in i's favour.
+// Orient a pick to a candidate pairing (h,a); null unless both labels match.
+function _orientPick(kp,h,a){
+  if(!kp||!kp.home||!kp.away) return null;
+  let hs,as_;
+  if(kp.home===h&&kp.away===a){ hs=kp.homeScore; as_=kp.awayScore; }
+  else if(kp.home===a&&kp.away===h){ hs=kp.awayScore; as_=kp.homeScore; }
+  else return null;
+  let pen=kp.penWinner;
+  if(pen==='home') pen=kp.home; else if(pen==='away') pen=kp.away;
+  if(!pen && kp.penHome!=null && kp.penAway!=null && kp.penHome!==kp.penAway)
+    pen = kp.penHome>kp.penAway ? kp.home : kp.away;
+  const hasScore = hs!=null && as_!=null;
+  const dir = hasScore ? (hs>as_?'h':hs<as_?'a':'d') : null;
+  const adv = hasScore ? (hs>as_?h : hs<as_?a : ((pen===h||pen===a)?pen:null)) : null;
+  return {hs, as_, dir, adv, hasScore};
+}
+// How a pick relates to a pairing: both teams (oriented), one team (+their
+// predicted advancer), or nothing.
+function _pickVsPair(kp,h,a){
+  const o=_orientPick(kp,h,a);
+  if(o) return {t:2,o};
+  if(!kp) return {t:0};
+  const got=[kp.home,kp.away].filter(x=>x && (x===h||x===a));
+  if(!got.length) return {t:0};
+  let adv=null;
+  if(kp.homeScore!=null && kp.awayScore!=null){
+    if(kp.homeScore>kp.awayScore) adv=kp.home;
+    else if(kp.awayScore>kp.homeScore) adv=kp.away;
+    else { let pen=kp.penWinner; if(pen==='home')pen=kp.home; else if(pen==='away')pen=kp.away;
+      if(!pen && kp.penHome!=null && kp.penAway!=null && kp.penHome!==kp.penAway) pen=kp.penHome>kp.penAway?kp.home:kp.away;
+      adv=(pen===kp.home||pen===kp.away)?pen:null; }
+  }
+  return {t:1, got:got[0], adv};
+}
+// Max of (pts_i − pts_j) for ONE undecided game. missX = unpicked in a locked
+// repicker (fixed −5, unweighted). weight applies to pick-derived points only.
+function _pairGameMaxDelta(kpI,kpJ,pos,P,missI,missJ,weight){
+  const homes=[...((pos&&pos.home)||[])], aways=[...((pos&&pos.away)||[])];
+  if(!homes.length||!aways.length) return 0;
+  let best=-Infinity;
+  for(const h of homes) for(const a of aways){
+    if(h===a) continue;
+    // i's best for this pairing, remembering what the scenario pins down
+    let bi=0, dirI=null, advI=null, exactI=null;
+    if(!missI){
+      const vi=_pickVsPair(kpI,h,a);
+      if(vi.t===2 && vi.o.hasScore){
+        dirI=vi.o.dir; advI=vi.o.adv; exactI=[vi.o.hs,vi.o.as_];
+        bi=P.matchup*2+P.outcome+P.advancer+P.exact;
+        if(dirI==='d'&&!advI) bi-=P.advancer;          // draw with no pen winner picked
+      } else if(vi.t===2) bi=P.matchup*2;
+      else if(vi.t===1){ bi=P.matchup; if(vi.adv===vi.got){ bi+=P.advancer; advI=vi.got; } }
+    }
+    // j's guaranteed minimum under that scenario (free variables go against j)
+    let fj=0;
+    if(!missJ){
+      const vj=_pickVsPair(kpJ,h,a);
+      if(vj.t===2){
+        fj=P.matchup*2;
+        if(vj.o.hasScore){
+          if(dirI!=null){                              // full scenario pinned by i's pick
+            if(vj.o.dir===dirI) fj+=P.outcome;
+            if(vj.o.adv && vj.o.adv===advI) fj+=P.advancer;
+            if(exactI && vj.o.hs===exactI[0] && vj.o.as_===exactI[1] && (dirI!=='d'||vj.o.adv===advI)) fj+=P.exact;
+          } else if(advI){                             // only the advancer pinned
+            if(vj.o.adv===advI) fj+=P.advancer;        // direction chosen ≠ j's → no outcome
+          }                                            // else everything deniable
+        }
+      } else if(vj.t===1){
+        fj=P.matchup;
+        if(vj.adv===vj.got && advI && advI===vj.got) fj+=P.advancer;
+      }
+    }
+    const d=(missI?-RE_MISS_PENALTY:bi*weight) - (missJ?-RE_MISS_PENALTY:fj*weight);
+    if(d>best) best=d;
+  }
+  return best===-Infinity?0:best;
+}
+
 // A KO game's entered result, or a provisional stand-in from the live ESPN feed
 // so in-progress games appear in the results grids before full time.
 function _koActualOrLive(id){
@@ -5062,232 +5146,96 @@ function _hasPicks(u){
 }
 
 function renderResults(){
-  const participants=[];
-  if(S.name&&Object.keys(S.gPreds).length>0) participants.push({name:S.name+' (you)',gPreds:S.gPreds});
-  if(picksVisible()) participants.push(...S.otherUsers.filter(_hasPicks));
+  // Original-pick participants (group + KO crowd splits and popups)
+  const parts=[];
+  if(S.name&&(Object.keys(S.gPreds).length>0||Object.keys(S.kPreds||{}).length>0)) parts.push({name:S.name+' (you)',gPreds:S.gPreds,kPreds:S.kPreds||{}});
+  if(picksVisible()) parts.push(...S.otherUsers.map(u=>({name:u.name,gPreds:u.gPreds||{},kPreds:u.kPreds||{}})));
+  const reParts=Object.entries(S.allRePicks||{}).map(([name,picks])=>({name,kPreds:picks}));
+  const seg=(n,color,on)=>`<span style="color:${color};font-weight:${on?800:600};${on?'text-decoration:underline;':''}">${n}</span>`;
 
-  const liveIds = new Set(Object.keys(S.gLive).map(Number));
-  const doneIds = new Set(Object.keys(S.gResults).map(Number));
-
-  const liveGames      = GROUP_GAMES.filter(g=>liveIds.has(g.id));
-  const completedGames = GROUP_GAMES.filter(g=>doneIds.has(g.id)&&!liveIds.has(g.id))
-                           .sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id);
-  const upcomingGames  = GROUP_GAMES.filter(g=>!doneIds.has(g.id)&&!liveIds.has(g.id))
-                           .sort((a,b)=>a.date.localeCompare(b.date)||a.id-b.id);
-
-  // Group letter is only meaningful when results span >1 group;
-  // for a single group's view we can drop the column.
-  const groupsRepresented = new Set(GROUP_GAMES.map(g=>g.g));
-  const showGroupCol = groupsRepresented.size > 1;
-
-  const TD = 'padding:0.3rem 0.35rem;border-bottom:1px solid rgba(255,255,255,0.04);vertical-align:middle;';
-  const TH = 'padding:0.4rem 0.35rem;color:#64748b;font-size:0.66rem;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;text-align:center;background:#0a1628;border-bottom:1px solid rgba(255,255,255,0.08);position:sticky;top:0;z-index:2;';
-  // Single sticky info column (Group + Match + Score merged) — left:0, no offset guessing
-  const TD_GAME = `${TD}position:sticky;left:0;z-index:1;background:#112a45;box-shadow:3px 0 6px rgba(0,0,0,0.3);white-space:nowrap;`;
-  const TH_GAME = `${TH}position:sticky;left:0;z-index:3;text-align:left;box-shadow:3px 0 6px rgba(0,0,0,0.3);`;
-
-  function predCell(p, game, r, cons){
-    const pred = p.gPreds[game.id];
-    if(!pred) return `<td style="${TD}color:#334155;text-align:center;font-family:monospace;">–</td>`;
-    const [ph,pa] = pred;
-    const p_pts = r!=null ? pts(ph,pa,r.hs,r.as) : null;
-    // Exact (3pts) = green + bullseye; Correct result (1pt) = green; Wrong (0pts) = red
-    const col   = p_pts===3?'#4ade80':p_pts===1?'#4ade80':p_pts===0?'#f87171':'#94a3b8';
-    const bg    = p_pts===3?'rgba(74,222,128,0.12)':p_pts===1?'rgba(74,222,128,0.06)':p_pts===0?'rgba(248,113,113,0.06)':'transparent';
-    // Contrarian bar (behind the score): violet wash sized by how far this pick
-    // sits from the crowd's average scoreline. Conformists show nothing.
-    let devBar='', titleTxt='';
-    if(cons && cons.n>=2){
-      const dist = Math.hypot(ph-cons.avgH, pa-cons.avgA);
-      const norm = Math.min(1, dist/3); // 3 goals away (Euclidean) = full bar
-      titleTxt = `${dist.toFixed(1)} goals from the crowd avg (${cons.avgH.toFixed(1)}–${cons.avgA.toFixed(1)})`;
-      if(norm>0.02) devBar = `<div style="position:absolute;left:0;top:50%;transform:translateY(-50%);height:72%;width:${(norm*100).toFixed(0)}%;background:#a78bfa;opacity:0.20;border-radius:0 3px 3px 0;pointer-events:none;"></div>`;
-    }
-    // Compact display: exact → just the bullseye (pick on hover); wrong → the
-    // score in red; correct-result / not-yet-scored → the score.
-    let content;
-    if(p_pts===3){ content='🎯'; titleTxt=`${ph}–${pa} · exact${titleTxt?' · '+titleTxt:''}`; }
-    else { content=`${ph}–${pa}`; }
-    const titleAttr = titleTxt?` title="${esc(titleTxt)}"`:'';
-    return `<td${titleAttr} style="${TD}background:${bg};color:${col};font-family:monospace;font-weight:600;font-size:0.78rem;text-align:center;white-space:nowrap;position:relative;">${devBar}<span style="position:relative;">${content}</span></td>`;
+  // Every game that is finished or in progress, newest first, grouped by day.
+  const entries=[];
+  for(const g of GROUP_GAMES){
+    const live=S.gLive[g.id], done=S.gResults[g.id];
+    if(!live&&!done) continue;
+    entries.push({kind:'group', iso:gameKickoff(g)||`${g.date}T12:00:00Z`, g, live, done});
   }
+  for(const id of Object.keys(KO_VENUES)){
+    const a=_koActualOrLive(id); if(!a||a.homeScore==null) continue;
+    entries.push({kind:'ko', iso:KICKOFFS[id]||'', slot:id, actual:a});
+  }
+  entries.sort((x,y)=>(y.iso||'').localeCompare(x.iso||''));
 
-  function gameRow(game, mode){
-    const r    = mode==='live' ? S.gLive[game.id] : mode==='done' ? {hs:S.gResults[game.id][0],as:S.gResults[game.id][1]} : null;
-    const live = S.gLive[game.id];
-    // Crowd consensus across everyone who predicted this fixture.
-    const cons = crowdConsensus(participants.map(p=>p.gPreds[game.id]).filter(Boolean));
+  const roundChip=id=> id.startsWith('r32')?'R32':id.startsWith('r16')?'R16':id.startsWith('qf')?'QF':id.startsWith('sf')?'SF':id==='3rd'?'3rd':'Final';
+  // Compact crowd split (like Today's games): counts of left-win · draw · right-win
+  // picks, the actual result underlined; tap to open the full picks popup.
+  const splitSpan=(dist,actual,call,label)=>{
+    const s=`${seg(dist.h,'#60a5fa',actual==='h')}·${seg(dist.d,'#94a3b8',actual==='d')}·${seg(dist.a,'#fb923c',actual==='a')}`;
+    const lbl=label?`<span style="color:#475569;font-weight:700;">${label} </span>`:'';
+    return `<span onclick="${call}" title="Tap to see everyone's picks${label?` — ${label==='O'?'original brackets':'repicker'}`:''}" style="cursor:pointer;font-family:monospace;font-size:0.72rem;white-space:nowrap;">${lbl}${s}</span>`;
+  };
+  const rowHTML=(chip,homeT,awayT,mid,splits,rowBg)=>`
+    <div style="display:flex;align-items:center;gap:0.5rem;padding:0.38rem 0.75rem;border-bottom:1px solid rgba(255,255,255,0.05);font-size:0.84rem;${rowBg||''}">
+      <span style="flex:0 0 2.6rem;font-size:0.6rem;font-weight:700;color:#64748b;text-transform:uppercase;">${chip}</span>
+      <span style="flex:1;min-width:0;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#e2e8f0;">${esc(shortTeamName(homeT))} ${flag(homeT)}</span>
+      <span style="flex-shrink:0;min-width:6.2rem;text-align:center;">${mid}</span>
+      <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#e2e8f0;">${flag(awayT)} ${esc(shortTeamName(awayT))}</span>
+      <span style="flex-shrink:0;display:flex;gap:0.7rem;justify-content:flex-end;min-width:4.2rem;">${splits}</span>
+    </div>`;
 
-    let scoreStr;
-    if(mode==='live'){
-      scoreStr = `<span style="color:#f87171;font-family:monospace;font-weight:800;">${r.hs}–${r.as}</span>`
-               + _liveClock(gameKickoff(game), live.detail, false, '0.6rem');
-    } else if(mode==='done'){
-      scoreStr = `<span style="color:#fcd34d;font-family:monospace;font-weight:800;">${r.hs}–${r.as}</span>`
-               + `<span style="color:#475569;font-size:0.6rem;margin-left:0.2rem;">FT</span>`;
-    } else {
-      const iso = gameKickoff(game);
-      if(iso){
-        const dd = new Date(iso);
-        const ds = dd.toLocaleDateString('en-US',{month:'short',day:'numeric'});
-        const ts = dd.toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
-        scoreStr = `<span style="color:#475569;font-size:0.7rem;">${ds} · ${ts}</span>`;
+  let body='', lastDay='';
+  for(const e of entries){
+    const dayKey=localDateKey(e.iso);
+    if(dayKey!==lastDay){
+      const d=new Date(dayKey+'T12:00:00');
+      body+=`<div style="padding:0.35rem 0.75rem;background:#0a1628;color:#fbbf24;font-size:0.62rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;">${d.toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})}</div>`;
+      lastDay=dayKey;
+    }
+    if(e.kind==='group'){
+      const g=e.g;
+      let mid, actual;
+      if(e.live){
+        mid=`<span style="color:#f87171;font-family:monospace;font-weight:800;">${e.live.hs}–${e.live.as}</span>${_liveClock(e.iso, e.live.detail, false, '0.56rem')}`;
+        actual=e.live.hs>e.live.as?'h':e.live.hs<e.live.as?'a':'d';
       } else {
-        const d = new Date(game.date+'T12:00:00');
-        scoreStr = `<span style="color:#475569;font-size:0.7rem;">${d.toLocaleDateString('en-US',{month:'short',day:'numeric'})}</span>`;
+        const [rh,ra]=e.done;
+        mid=`<span style="color:#fcd34d;font-family:monospace;font-weight:800;">${rh}–${ra}</span> <span style="color:#475569;font-size:0.56rem;">FT</span>`;
+        actual=rh>ra?'h':rh<ra?'a':'d';
       }
+      const dist=_pickDist(g.id, parts);
+      body+=rowHTML(`G${g.g}`, g.home, g.away, mid, splitSpan(dist,actual,`showPicksPopup('group',${g.id},false)`,''), e.live?'background:rgba(239,68,68,0.06);':'');
+    } else {
+      const a=e.actual;
+      const havePens=a.homeScore===a.awayScore&&a.penHome!=null&&a.penAway!=null;
+      let mid=`<span style="color:${a._live?'#f87171':'#fcd34d'};font-family:monospace;font-weight:800;">${fmtKoScore(a.homeScore,a.awayScore,a.penHome,a.penAway)}</span>`;
+      mid+= a._live ? _liveClock(e.iso, a._detail, true, '0.56rem')
+        : (a.homeScore===a.awayScore&&a.penWinner&&!havePens) ? ` <span style="color:#94a3b8;font-size:0.56rem;">pens ${esc(shortTeamName(a.penWinner))}</span>`
+        : ` <span style="color:#475569;font-size:0.56rem;">FT</span>`;
+      const actual=a.homeScore>a.awayScore?'h':a.homeScore<a.awayScore?'a':'d';
+      const splits=[splitSpan(_koResultDist(e.slot, a.home, a.away, parts), actual, `showPicksPopup('ko','${e.slot}',false)`, 'O')];
+      if(e.slot!=='3rd' && reParts.length){
+        const reSlot=e.slot==='final'?'final-1':e.slot;
+        splits.push(splitSpan(_koResultDist(reSlot, a.home, a.away, reParts, true), actual, `showPicksPopup('ko','${e.slot}',true)`, 'R'));
+      }
+      body+=rowHTML(roundChip(e.slot), a.home, a.away, mid, splits.join(''), a._live?'background:rgba(239,68,68,0.06);':'');
     }
-
-    // Group badge (only when multiple groups in view)
-    const grpBadge = showGroupCol
-      ? `<span style="font-size:0.62rem;font-weight:700;color:#64748b;margin-right:0.45rem;">G${game.g}</span>`
-      : '';
-
-    const rowBg = mode==='live' ? 'background:rgba(239,68,68,0.06);' : '';
-    return `
-      <tr style="${rowBg}">
-        <td style="${TD_GAME}font-size:0.82rem;">
-          ${grpBadge}<span style="color:white;font-weight:500;">${teamSpan(game.home)}</span>
-          <span style="color:#475569;margin:0 0.3rem;">v</span>
-          <span style="color:white;font-weight:500;">${teamSpan(game.away,true)}</span>
-          ${dossierBtn(game.home, game.away)}
-          <span style="margin-left:0.55rem;">${scoreStr}</span>
-          ${crowdOddsBar(cons)}
-        </td>
-        ${participants.map(p=>predCell(p,game,r,cons)).join('')}
-      </tr>`;
   }
 
-  const allGames = [...liveGames, ...completedGames, ...upcomingGames];
-  if(allGames.length===0) return `
-    <div style="text-align:center;padding:3rem 1rem;color:#64748b;">
-      <div style="font-size:2rem;margin-bottom:0.5rem;">⏳</div>
-      No fixtures loaded.
-    </div>`;
-
-  const headerRow = `
-    <tr>
-      <th style="${TH_GAME}">Game</th>
-      ${participants.map(p=>`<th style="${TH}" title="${esc(p.name)}">${esc(abbrevName(p.name))}</th>`).join('')}
-    </tr>`;
-
-  const rows = liveGames.map(g=>gameRow(g,'live')).join('')
-             + completedGames.map(g=>gameRow(g,'done')).join('')
-             + upcomingGames.map(g=>gameRow(g,'upcoming')).join('');
-
-  // ── Knockout results section ──────────────────────────────
-  // Mirror the group participant columns, but read KO predictions.
-  const koParticipants=[];
-  if(S.name && Object.keys(S.gPreds).length>0) koParticipants.push({name:S.name+' (you)', kPreds:S.kPreds||{}});
-  if(picksVisible()) koParticipants.push(...S.otherUsers.filter(_hasPicks).map(u=>({name:u.name, kPreds:u.kPreds||{}})));
-
-  const koRoundLabel = id =>
-    id.startsWith('r32') ? 'Round of 32' :
-    id.startsWith('r16') ? 'Round of 16' :
-    id.startsWith('qf')  ? 'Quarter-finals' :
-    id.startsWith('sf')  ? 'Semi-finals' :
-    id==='3rd'           ? 'Third place' :
-    id==='final'         ? 'Final' : id;
-
-  function koGameCell(actual, id){
-    const aHS=actual.homeScore, aAS=actual.awayScore;
-    let scoreStr='';
-    if(aHS!=null && aAS!=null){
-      const havePens = aHS===aAS && actual.penHome!=null && actual.penAway!=null;
-      scoreStr = `<span style="color:${actual._live?'#f87171':'#fcd34d'};font-family:monospace;font-weight:800;">${fmtKoScore(aHS,aAS,actual.penHome,actual.penAway)}</span>`;
-      scoreStr += actual._live
-        ? _liveClock(KICKOFFS[id], actual._detail, true, '0.6rem')
-        : (aHS===aAS && actual.penWinner && !havePens)
-          ? `<span style="color:#94a3b8;font-size:0.6rem;margin-left:0.25rem;">pens: ${esc(shortTeamName(actual.penWinner))}</span>`
-          : `<span style="color:#475569;font-size:0.6rem;margin-left:0.2rem;">FT</span>`;
-    }
-    return `<td style="${TD_GAME}font-size:0.82rem;">
-      <span style="color:white;font-weight:500;">${teamSpan(actual.home)}</span>
-      <span style="color:#475569;margin:0 0.3rem;">v</span>
-      <span style="color:white;font-weight:500;">${teamSpan(actual.away,true)}</span>
-      ${dossierBtn(actual.home, actual.away)}
-      <span style="margin-left:0.55rem;">${scoreStr}</span>
-    </td>`;
-  }
-
-  function koPredCell(p, id, actual){
-    const c=koCompare(p.kPreds[id], actual);
-    const base=`${TD}text-align:center;font-family:monospace;font-weight:600;white-space:nowrap;`;
-    if(c.kind==='nopick') return `<td style="${base}color:#334155;">–</td>`;
-    if(c.kind==='wrong')  return `<td style="${base}color:#64748b;" title="Different matchup — you had: ${esc(c.predLabel)}">✗</td>`;
-    if(c.kind==='half')   return `<td style="${base}color:#fbbf24;background:rgba(251,191,36,0.08);" title="One team right — you had: ${esc(c.predLabel)}">½</td>`;
-    if(c.kind==='teams')  return `<td style="${base}color:#4ade80;" title="Right matchup, no score predicted">✓</td>`;
-    const dh=`<span style="color:${c.homeOk?'#4ade80':'#f87171'};">${c.ph}</span>`;
-    const da=`<span style="color:${c.awayOk?'#4ade80':'#f87171'};">${c.pa}</span>`;
-    const badge=c.exact?' 🎯':c.advOk?'':' ✗';
-    const bg=c.exact?'rgba(74,222,128,0.12)':c.advOk?'rgba(74,222,128,0.06)':'rgba(248,113,113,0.06)';
-    let pen='';
-    if(c.isDraw && c.actualPen){
-      const ok=c.predPen && c.predPen===c.actualPen;
-      pen=` <span title="Penalty winner — you: ${esc(c.predPen||'—')}, actual: ${esc(c.actualPen)}" style="font-size:0.62rem;color:${ok?'#4ade80':'#f87171'};">P</span>`;
-    }
-    return `<td style="${base}background:${bg};">${dh}–${da}${badge}${pen}</td>`;
-  }
-
-  const enteredKo = Object.keys(KO_VENUES).filter(id => { const a=_koActualOrLive(id); return !!(a && a.home && a.away); });
-  let koBody='', lastRound='';
-  for(const id of enteredKo){
-    const actual=_koActualOrLive(id);
-    const rl=koRoundLabel(id);
-    if(rl!==lastRound){
-      koBody += `<tr><td colspan="${1+koParticipants.length}" style="padding:0.4rem 0.5rem;background:#0a1628;color:#fbbf24;font-size:0.66rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;position:sticky;left:0;">${rl}</td></tr>`;
-      lastRound=rl;
-    }
-    koBody += `<tr>${koGameCell(actual,id)}${koParticipants.map(p=>koPredCell(p,id,actual)).join('')}</tr>`;
-  }
-
-  const koHeaderRow = `
-    <tr>
-      <th style="${TH_GAME}">Match</th>
-      ${koParticipants.map(p=>`<th style="${TH}" title="${esc(p.name)}">${esc(abbrevName(p.name))}</th>`).join('')}
-    </tr>`;
-
-  const koLegend = `<div style="font-size:0.66rem;color:#64748b;margin-top:0.5rem;line-height:1.6;">
-    <span style="color:#4ade80;">green</span>/<span style="color:#f87171;">red</span> digits = each goal number right/wrong ·
-    🎯 exact score · ✓ right teams (no score) · <span style="color:#fbbf24;">½</span> one team right ·
-    ✗ different matchup · <b>P</b> = penalty-winner pick</div>`;
-
-  const koSection = enteredKo.length ? `
-    <div style="margin-top:1.75rem;">
-      <h2 style="font-size:1.1rem;font-weight:700;color:white;margin-bottom:0.5rem;">🏆 Knockout results</h2>
-      <div style="overflow:auto;max-height:calc(100vh - 5rem);background:#112a45;border:1px solid rgba(255,255,255,0.08);border-radius:0.75rem;">
-        <table style="width:100%;border-collapse:collapse;font-size:0.82rem;">
-          <thead>${koHeaderRow}</thead>
-          <tbody>${koBody}</tbody>
-        </table>
-      </div>
-      ${koLegend}
-    </div>` : `
-    <div style="margin-top:1.75rem;padding:1rem;background:rgba(255,255,255,0.03);border:1px dashed rgba(255,255,255,0.12);border-radius:0.75rem;color:#64748b;font-size:0.85rem;text-align:center;">
-      🏆 Knockout results will appear here as the matches are played — showing the actual matchup and how everyone's bracket pick lined up.
-    </div>`;
-
-  // Full-bleed: the results grid can be very wide, so break out of the centered
-  // page column and use up to ~96vw (capped) on larger screens, full width on phones.
   return `
-  <div style="position:relative;left:50%;transform:translateX(-50%);width:96vw;max-width:96rem;box-sizing:border-box;">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:0.5rem;">
       <h1 style="font-size:1.5rem;font-weight:700;color:white;">Results</h1>
       <button onclick="fetchLiveScores()" class="btn-s" id="fetch-btn" style="font-size:0.8rem;padding:0.4rem 0.875rem;white-space:nowrap;">🔄 Refresh scores</button>
     </div>
-    <div style="overflow:auto;max-height:calc(100vh - 5rem);background:#112a45;border:1px solid rgba(255,255,255,0.08);border-radius:0.75rem;">
-      <table style="width:100%;border-collapse:collapse;font-size:0.82rem;">
-        <thead>${headerRow}</thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>
-    <div style="font-size:0.66rem;color:#64748b;margin-top:0.5rem;line-height:1.6;">
-      Under each fixture: <b>crowd odds</b> (<span style="color:#60a5fa;">H</span>/<span style="color:#94a3b8;">draw</span>/<span style="color:#fb923c;">A</span>) from everyone's picks, weighted by how firm each scoreline is ·
-      the <span style="color:#a78bfa;">violet bar</span> behind a score shows how far that pick is from the crowd's average — wider = more contrarian.
-    </div>
-    ${koSection}
+    ${entries.length===0
+      ?`<div style="text-align:center;padding:3rem 1rem;color:#64748b;"><div style="font-size:2rem;margin-bottom:0.5rem;">⏳</div>Results appear here as games are played.</div>`
+      :`<div style="background:#112a45;border:1px solid rgba(255,255,255,0.08);border-radius:0.75rem;overflow:hidden;">
+        <div style="display:flex;justify-content:flex-end;gap:0.3rem;padding:0.4rem 0.75rem;font-size:0.62rem;color:#475569;border-bottom:1px solid rgba(255,255,255,0.06);flex-wrap:wrap;">
+          picks: <span style="color:#60a5fa;">left</span>·<span style="color:#94a3b8;">draw</span>·<span style="color:#fb923c;">right</span> — tap a split for everyone's picks · O = original · R = repicker
+        </div>
+        ${body}
+      </div>`}
     <style>@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}</style>
-  </div>`;
+  `;
 }
 
 function setLbSort(key){
@@ -5381,7 +5329,7 @@ function renderPodium(entries, getVal, title, storageKey, getRange){
 // (yellow marker = current score), plus the best/worst finishing position
 // their range allows given everyone ELSE's ranges: guaranteed-above players
 // set the best finish, anyone whose ceiling clears your floor sets the worst.
-function renderOutcomeRanges(entries, getCur, getLo, getHi, title){
+function renderOutcomeRanges(entries, getCur, getLo, getHi, title, pairCfg){
   if(!entries || entries.length<2) return '';
   const es=[...entries].sort((a,b)=>getCur(b)-getCur(a));
   const lo=Math.min(...es.map(getLo)), hi=Math.max(...es.map(getHi));
@@ -5389,10 +5337,38 @@ function renderOutcomeRanges(entries, getCur, getLo, getHi, title){
   const span=hi-lo;
   const ord=n=>n+(n%10===1&&n%100!==11?'st':n%10===2&&n%100!==12?'nd':n%10===3&&n%100!==13?'rd':'th');
   const r1d=v=>Math.round(v*10)/10;
-  const rows=es.map(e=>{
+  // Pairwise, shared-outcome-aware deltas: D[i][j] = max over remaining
+  // outcomes of (final_i − final_j). D[i][j] < 0 → j is guaranteed to finish
+  // above i (e.g. identical remaining picks + j already ahead).
+  let D=null;
+  if(pairCfg){
+    const P=koPts();
+    const games=[];
+    if(pairCfg.repick){
+      const w=reWeights(); const rk=id=>id.startsWith('r32')?'r32':id.startsWith('r16')?'r16':id.startsWith('qf')?'qf':id.startsWith('sf')?'sf':'final';
+      for(const id of RE_SLOT_IDS){ const real=id==='final-1'?'final':id; const r=S.kResults[real]; if(r&&r.homeScore!=null) continue; games.push({id, real, w:(w[rk(id)]||1)}); }
+    } else {
+      const w=koWeights();
+      for(const id of Object.keys(KO_VENUES)){ const r=S.kResults[id]; if(r&&r.homeScore!=null) continue; games.push({id, real:id, w:(w[koRoundKey(id)]||1)}); }
+    }
+    D=es.map(()=>new Array(es.length).fill(0));
+    for(let i=0;i<es.length;i++) for(let j=0;j<es.length;j++){
+      if(i===j) continue;
+      let s=getCur(es[i])-getCur(es[j]);
+      const pi=pairCfg.getPicks(es[i])||{}, pj=pairCfg.getPicks(es[j])||{};
+      for(const g of games){
+        const missI=pairCfg.repick&&!reHasPick(pi,g.id), missJ=pairCfg.repick&&!reHasPick(pj,g.id);
+        s+=_pairGameMaxDelta(missI?null:pi[g.id], missJ?null:pj[g.id], pairCfg.possible[g.real], P, missI, missJ, g.w);
+      }
+      D[i][j]=s;
+    }
+  }
+  const rows=es.map((e,i)=>{
     const f=getLo(e), c=getHi(e), cur=getCur(e);
-    const best =1+es.filter(o=>o!==e && getLo(o)>c).length;   // already out of reach
-    const worst=1+es.filter(o=>o!==e && getHi(o)>f).length;   // could still end above
+    const best = D ? 1+D[i].filter((v,j)=>j!==i && v<0).length            // j guaranteed above i
+                   : 1+es.filter(o=>o!==e && getLo(o)>c).length;
+    const worst= D ? 1+es.filter((o,j)=>j!==i && D[j][i]>0).length        // j can still pass i
+                   : 1+es.filter(o=>o!==e && getHi(o)>f).length;
     const L=(f-lo)/span*100, Wd=Math.max(0.8,(c-f)/span*100), M=(cur-lo)/span*100;
     const isSelf=e.name===S.name+' (you)'||e.name===S.name;
     return `<div style="display:flex;align-items:center;gap:0.6rem;padding:0.3rem 0;font-size:0.78rem;">
@@ -5799,7 +5775,7 @@ function renderCompare(){
     let potential=pk.max, potentialMin=0, potentialDetail=pk.detail;
     for(const game of GROUP_GAMES){ if(!S.gResults[game.id]){ if(p.gPreds[game.id]) potential += W.a+W.b; else { potential += -3*W.c; potentialMin += -3*W.c; } } }
     potential=+potential.toFixed(2); potentialMin=+potentialMin.toFixed(2);
-    return {name:p.name,total,groupTotal,koTotal:ko.koTotal,matchups:ko.matchups,rt,roundTeamsPts,potential,potentialMin,potentialDetail,
+    return {name:p.name,total,groupTotal,koTotal:ko.koTotal,matchups:ko.matchups,rt,roundTeamsPts,potential,potentialMin,potentialDetail,_koPicks:koPicks,
             koMatchupRound:koMatchupByRound(p, actualKoTeams),
             exact,correct,scored,bad,weighted,surprise:+surprise.toFixed(1),predCount:Object.keys(p.gPreds).length};
   }).sort((a,b)=>{
@@ -5876,43 +5852,12 @@ function renderCompare(){
       </tbody></table></div>`;
 
 
-  const resultCards=completed.map(game=>{
-    const [rh,ra]=S.gResults[game.id];
-    const gamePreds=allPred.map(p=>{
-      const pr=p.gPreds[game.id]; if(!pr) return null;
-      const [ph,pa]=pr;
-      return {name:p.name,ph,pa,p:pts(ph,pa,rh,ra),bad:Math.abs(ph-rh)+Math.abs(pa-ra)};
-    }).filter(Boolean).sort((a,b)=>b.p-a.p);
-    return `
-      <div style="background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;overflow:hidden;margin-bottom:0.625rem;">
-        <div style="display:flex;align-items:center;gap:0.75rem;padding:0.625rem 1rem;border-bottom:1px solid rgba(255,255,255,0.07);background:rgba(10,22,40,0.5);flex-wrap:wrap;">
-          <span style="font-size:0.7rem;color:#64748b;background:rgba(255,255,255,0.05);padding:0.1rem 0.4rem;border-radius:0.25rem;white-space:nowrap;">Group ${game.g} MD${game.md}</span>
-          <div style="flex:1;display:flex;align-items:center;justify-content:center;gap:0.625rem;font-weight:600;flex-wrap:wrap;">
-            <span>${teamSpan(game.home)}</span>
-            <span style="font-size:1.25rem;font-weight:700;color:#fcd34d;">${rh}–${ra}</span>
-            <span>${teamSpan(game.away,true)}</span>
-          </div>
-          <span style="font-size:0.7rem;color:#475569;">${game.date}</span>
-        </div>
-        ${gamePreds.length===0?'<div style="padding:0.625rem 1rem;font-size:0.8rem;color:#64748b;">No predictions</div>':
-          gamePreds.map(p=>`
-            <div style="display:flex;align-items:center;gap:0.625rem;padding:0.5rem 1rem;border-bottom:1px solid rgba(255,255,255,0.04);font-size:0.8rem;">
-              <span style="color:#cbd5e1;font-weight:500;width:8rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(p.name)}</span>
-              <span style="color:#94a3b8;font-variant-numeric:tabular-nums;">${p.ph}–${p.pa}</span>
-              <div style="margin-left:auto;display:flex;align-items:center;gap:0.4rem;">
-                ${p.p===3?'<span class="pts-exact">Exact</span>':p.p===1?'<span class="pts-res">Result✓</span>':'<span class="pts-no">Wrong</span>'}
-                <span style="font-weight:700;${p.p===3?'color:#4ade80':p.p===1?'color:#facc15':'color:#334155'}">+${p.p}</span>
-                <span style="color:#f87171;font-size:0.7rem;font-weight:600;background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.2);padding:0.1rem 0.3rem;border-radius:0.25rem;" title="Total goal error vs actual scores — lower is better">Pts err ${p.bad}</span>
-              </div>
-            </div>`).join('')}
-      </div>`;
-  }).join('');
 
   // ── Repicker standings (separate game) — appears once KO results exist ──
   const reLbAll = Object.entries(S.allRePicks||{})
     .filter(([name,picks])=> reQualified(picks))                          // ≥half R32 — complete or in-progress
     .map(([name,picks])=>{ const pr=potentialRepickFor(picks, koPossible);
-      return { name, ...koScoreForRepicker(picks),
+      return { name, ...koScoreForRepicker(picks), _picks: picks,
       potential: pr.max, potentialMin: pr.min, potentialDetail: pr.detail,
       complete: rePickComplete(picks),
       picked: RE_SLOT_IDS.filter(id=>reHasPick(picks,id)).length }; })
@@ -6024,12 +5969,14 @@ function renderCompare(){
     ? renderPodium(lb, e=>e.total, '🏆 Overall podium', 'wc26_podium_overall',
         e=>[e.total+e.potentialMin, e.total+e.potential]) : '';
   const rangesHTML = (lb.length>1 && completed.length>0)
-    ? renderOutcomeRanges(lb, e=>e.total, e=>e.total+e.potentialMin, e=>e.total+e.potential, '🔮 Range of outcomes') : '';
+    ? renderOutcomeRanges(lb, e=>e.total, e=>e.total+e.potentialMin, e=>e.total+e.potential, '🔮 Range of outcomes',
+        {repick:false, possible:koPossible, getPicks:e=>e._koPicks}) : '';
 
   // ── Repick podium (by repicker KO points) for the Repick sub-tab ──
   const repickPodiumHTML = renderPodium(reLbAll, e=>e.koTotal, '🔄 Repick podium', 'wc26_podium_repick',
       e=>[e.koTotal+e.potentialMin, e.koTotal+e.potential]);
-  const reRangesHTML = renderOutcomeRanges(reLbAll, e=>e.koTotal, e=>e.koTotal+e.potentialMin, e=>e.koTotal+e.potential, '🔮 Range of outcomes · repick');
+  const reRangesHTML = renderOutcomeRanges(reLbAll, e=>e.koTotal, e=>e.koTotal+e.potentialMin, e=>e.koTotal+e.potential, '🔮 Range of outcomes · repick',
+      {repick:true, possible:koPossible, getPicks:e=>e._picks});
 
   // Sub-tabs: Original (the main game) vs Repick (the KO re-pick game). Default
   // to Repick once the knockouts are under way; sticky once the user clicks.
@@ -6042,7 +5989,7 @@ function renderCompare(){
   const repickParts = Object.entries(S.allRePicks||{}).map(([name,picks])=>({name, kPreds:picks}));
   const repickTodayHTML = todaysGamesPanel(repickParts, true);   // today's KO games, repick picks
   const repickBody = `${repickTodayHTML}${reLbAll.length>0
-    ? `${repickPodiumHTML}${reRangesHTML}${reSectionHTML}${repickerResultsGrid()}`
+    ? `${repickPodiumHTML}${reRangesHTML}${reSectionHTML}`
     : `<div style="text-align:center;padding:2.5rem;color:#64748b;background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;">🔄 Repicker standings appear once the knockouts begin and players' brackets are scored.</div>`}`;
 
   return `
@@ -6162,9 +6109,6 @@ function renderCompare(){
     </div>`:''}
 
     ${roundTeamsHTML}
-
-    ${completed.length>0?`<h2 style="font-size:1.125rem;font-weight:700;color:white;margin-bottom:0.75rem;">Game breakdown</h2>${resultCards}`
-      :`<div style="text-align:center;padding:2.5rem;color:#64748b;background:#112a45;border:1px solid rgba(255,255,255,0.07);border-radius:0.75rem;">⏳ Game results appear here once entered in Admin.</div>`}
     `}
     </div>
   `;
