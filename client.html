@@ -2980,14 +2980,21 @@ function _koPickPotential(kp, pos, P){
   if(adv && oneIn(adv)) best+=P.advancer;
   return best;
 }
+// Per-game label for the potential breakdown tooltip.
+function _potLabel(id, kp, v){
+  const nm=id.replace('r32','R32-').replace('r16','R16-').replace('qf-','QF').replace('sf-','SF').replace('final-1','Final').replace('final','Final');
+  const teams=(kp&&kp.home&&kp.away)?` ${shortTeamName(kp.home)}–${shortTeamName(kp.away)}`:'';
+  return `${nm}${teams}: +${Math.round(v*10)/10}`;
+}
 // Max points a player's ORIGINAL bracket can still earn from undecided KO games.
 function potentialKoFor(picks, possible){
-  const w=koWeights(), P=koPts(); let pot=0;
+  const w=koWeights(), P=koPts(); let pot=0; const parts=[];
   for(const id of Object.keys(KO_VENUES)){
     const r=S.kResults[id]; if(r&&r.homeScore!=null) continue;
-    pot += _koPickPotential(picks[id], possible[id], P) * (w[koRoundKey(id)]||1);
+    const v=_koPickPotential(picks[id], possible[id], P) * (w[koRoundKey(id)]||1);
+    if(v>0){ pot+=v; parts.push(_potLabel(id, picks[id], v)); }
   }
-  return +pot.toFixed(2);
+  return {max:+pot.toFixed(2), detail:parts.join(' · ')};
 }
 // Points a REPICKER bracket can still gain/lose: max assumes every remaining
 // pick lands perfectly; min is only the CERTAIN part — the −5 for each
@@ -2995,14 +3002,16 @@ function potentialKoFor(picks, possible){
 function potentialRepickFor(picks, possible){
   const w=reWeights(), P=koPts();
   const rk=id=>id.startsWith('r32')?'r32':id.startsWith('r16')?'r16':id.startsWith('qf')?'qf':id.startsWith('sf')?'sf':'final';
-  let pot=0, certain=0;
+  let pot=0, certain=0, unpicked=0; const parts=[];
   for(const id of RE_SLOT_IDS){
     const realId = id==='final-1'?'final':id;
     const r=S.kResults[realId]; if(r&&r.homeScore!=null) continue;
-    if(!reHasPick(picks,id)){ pot -= RE_MISS_PENALTY; certain -= RE_MISS_PENALTY; continue; }
-    pot += _koPickPotential(picks[id], possible[realId], P) * (w[rk(id)]||1);
+    if(!reHasPick(picks,id)){ pot -= RE_MISS_PENALTY; certain -= RE_MISS_PENALTY; unpicked++; continue; }
+    const v=_koPickPotential(picks[id], possible[realId], P) * (w[rk(id)]||1);
+    if(v>0){ pot+=v; parts.push(_potLabel(id, picks[id], v)); }
   }
-  return {max:+pot.toFixed(2), min:+certain.toFixed(2)};
+  if(unpicked) parts.push(`unpicked −${RE_MISS_PENALTY}×${unpicked}`);
+  return {max:+pot.toFixed(2), min:+certain.toFixed(2), detail:parts.join(' · ')};
 }
 
 // A KO game's entered result, or a provisional stand-in from the live ESPN feed
@@ -5786,10 +5795,11 @@ function renderCompare(){
     const total=+(((weighted ?? 0)+ko.koTotal+roundTeamsPts)).toFixed(2);
     // Best case still available: remaining group games (perfect pick = A+B each,
     // a skipped game is a certain −3 PAB) + remaining KO potential.
-    let potential=potentialKoFor(koPicks, koPossible), potentialMin=0;
+    const pk=potentialKoFor(koPicks, koPossible);
+    let potential=pk.max, potentialMin=0, potentialDetail=pk.detail;
     for(const game of GROUP_GAMES){ if(!S.gResults[game.id]){ if(p.gPreds[game.id]) potential += W.a+W.b; else { potential += -3*W.c; potentialMin += -3*W.c; } } }
     potential=+potential.toFixed(2); potentialMin=+potentialMin.toFixed(2);
-    return {name:p.name,total,groupTotal,koTotal:ko.koTotal,matchups:ko.matchups,rt,roundTeamsPts,potential,potentialMin,
+    return {name:p.name,total,groupTotal,koTotal:ko.koTotal,matchups:ko.matchups,rt,roundTeamsPts,potential,potentialMin,potentialDetail,
             koMatchupRound:koMatchupByRound(p, actualKoTeams),
             exact,correct,scored,bad,weighted,surprise:+surprise.toFixed(1),predCount:Object.keys(p.gPreds).length};
   }).sort((a,b)=>{
@@ -5855,7 +5865,7 @@ function renderCompare(){
             ${maxPts>0?`<div style="margin-top:3px;height:3px;background:rgba(255,255,255,0.08);border-radius:9999px;width:7rem;overflow:hidden;"><div style="height:100%;background:#16a34a;width:${Math.max(0,Math.min(100,e.total/maxPts*100)).toFixed(1)}%;"></div></div>`:''}
           </td>
           <td style="padding:0.75rem 1rem;text-align:right;font-weight:700;color:#fcd34d;font-size:1rem;">${e.total}</td>
-          <td style="padding:0.75rem 1rem;text-align:right;color:#38bdf8;font-weight:600;" title="Best case: could reach ${(e.total+e.potential).toFixed(1)}">${e.potential>0?'+':''}${e.potential}</td>
+          <td style="padding:0.75rem 1rem;text-align:right;color:#38bdf8;font-weight:600;" title="Best case: could reach ${(e.total+e.potential).toFixed(1)}${e.potentialDetail?` — ${esc(e.potentialDetail)}`:''}">${e.potential>0?'+':''}${e.potential}</td>
           <td style="padding:0.75rem 1rem;text-align:right;color:#f0abfc;font-weight:600;">${e.scored>0?e.surprise:'–'}</td>
           ${koActive?`<td style="padding:0.75rem 1rem;text-align:right;color:#94a3b8;">${e.weighted ?? 0}</td>`:''}
           ${koActive?`<td style="padding:0.75rem 1rem;text-align:right;color:#a78bfa;font-weight:600;">${e.koTotal}</td>`:''}
@@ -5903,7 +5913,7 @@ function renderCompare(){
     .filter(([name,picks])=> reQualified(picks))                          // ≥half R32 — complete or in-progress
     .map(([name,picks])=>{ const pr=potentialRepickFor(picks, koPossible);
       return { name, ...koScoreForRepicker(picks),
-      potential: pr.max, potentialMin: pr.min,
+      potential: pr.max, potentialMin: pr.min, potentialDetail: pr.detail,
       complete: rePickComplete(picks),
       picked: RE_SLOT_IDS.filter(id=>reHasPick(picks,id)).length }; })
     .sort((a,b)=>b.koTotal-a.koTotal||b.matchups-a.matchups||a.name.localeCompare(b.name));
@@ -5950,7 +5960,7 @@ function renderCompare(){
         <td style="padding:0.6rem 1rem;">${i<3?MED[i]:i+1}</td>
         <td style="padding:0.6rem 1rem;color:white;font-weight:500;white-space:nowrap;">${avFor(e.name)}${esc(e.name)}${e.name===S.name?' (you)':''}${e.complete?'':` <span title="Bracket not finished — ${e.picked}/${RE_SLOT_IDS.length} games picked" style="font-size:0.6rem;color:#fbbf24;background:rgba(251,191,36,0.12);border:1px solid rgba(251,191,36,0.3);border-radius:0.3rem;padding:0.05rem 0.3rem;vertical-align:middle;">partial ${e.picked}/${RE_SLOT_IDS.length}</span>`}</td>
         <td style="padding:0.6rem 1rem;text-align:right;font-weight:700;color:#a78bfa;">${e.koTotal}</td>
-        <td style="padding:0.6rem 1rem;text-align:right;color:#38bdf8;font-weight:600;" title="Best case: could reach ${(e.koTotal+e.potential).toFixed(1)}">${e.potential>0?'+':''}${e.potential}</td>
+        <td style="padding:0.6rem 1rem;text-align:right;color:#38bdf8;font-weight:600;" title="Best case: could reach ${(e.koTotal+e.potential).toFixed(1)}${e.potentialDetail?` — ${esc(e.potentialDetail)}`:''}">${e.potential>0?'+':''}${e.potential}</td>
         <td style="padding:0.6rem 1rem;text-align:right;color:#cbd5e1;">${e.matchCount}</td>
         <td style="padding:0.6rem 1rem;text-align:right;color:#facc15;">${e.outcomeCount}</td>
         <td style="padding:0.6rem 1rem;text-align:right;color:#22d3ee;">${e.advCount}</td>
